@@ -1,0 +1,10 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+
+# Scratch projects (never commit user projects)
+*.sb3
+
+# OS artifacts
+Thumbs.db
+.DS_Store
