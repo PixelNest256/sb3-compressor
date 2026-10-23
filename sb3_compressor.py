@@ -21,7 +21,6 @@ import queue
 import re
 import sys
 import threading
-import traceback
 import zipfile
 
 CLOUD_PREFIX = "\u2601"
@@ -96,10 +95,14 @@ MONITOR_DEFAULTS = [
 
 class Options:
     def __init__(self, strip_defaults: bool = True, shorten_ids: bool = True,
-                 click_to_stage: bool = False):
+                 click_to_stage: bool = False, remove_unused: bool = True,
+                 compress_procs: bool = True, freq_ids: bool = True):
         self.strip_defaults = strip_defaults
         self.shorten_ids = shorten_ids
         self.click_to_stage = click_to_stage
+        self.remove_unused = remove_unused
+        self.compress_procs = compress_procs
+        self.freq_ids = freq_ids
 
 
 def default_output_path(in_path: str) -> str:
@@ -125,6 +128,10 @@ class Compressor:
             "fields_removed": 0,
             "monitors_updated": 0,
             "click_rewrites": 0,
+            "vars_removed": 0,
+            "lists_removed": 0,
+            "procs_renamed": 0,
+            "args_renamed": 0,
         }
         self.var_map: dict = {}
         self.list_map: dict = {}
@@ -132,6 +139,10 @@ class Compressor:
         self.var_by_name: dict = {}
         self.list_by_name: dict = {}
         self.bc_by_name: dict = {}
+        self.var_name_ids: dict = {}
+        self.list_name_ids: dict = {}
+        self._used_var_ids: set = set()
+        self._used_list_ids: set = set()
         self._layer_expect = 0
 
     def run(self, project: dict) -> dict:
@@ -141,8 +152,13 @@ class Compressor:
 
         self.progress("collect", 0.0, "変数・リスト・放送を収集中…")
         self._collect(targets)
+        if self.options.remove_unused:
+            self.progress("collect", 1.0, "未使用の変数・リストを解析中…")
+            self._scan_usage(targets, project.get("monitors"))
         if self.options.shorten_ids:
             self._rename_stores(targets)
+        elif self.options.remove_unused:
+            self._drop_unused(targets)
 
         self._layer_expect = 0
         n = len(targets)
@@ -174,11 +190,13 @@ class Compressor:
                 base = encode_id(vi := vi + 1)
                 self.var_map[vid] = ("V" + base, (CLOUD_PREFIX + " " if cloud else "") + "V" + base)
                 self.var_by_name.setdefault(name, self.var_map[vid])
+                self.var_name_ids.setdefault(name, set()).add(vid)
             for lid, ent in (tgt.get("lists") or {}).items():
                 name = ent[0] if isinstance(ent, list) and ent else str(ent)
                 base = encode_id(li := li + 1)
                 self.list_map[lid] = ("L" + base, "L" + base)
                 self.list_by_name.setdefault(name, self.list_map[lid])
+                self.list_name_ids.setdefault(name, set()).add(lid)
             for bid, ent in (tgt.get("broadcasts") or {}).items():
                 name = ent[0] if isinstance(ent, list) and ent else ent
                 base = encode_id(bi := bi + 1)
@@ -190,24 +208,120 @@ class Compressor:
         st["lists_renamed"] = len(self.list_map)
         st["broadcasts_renamed"] = len(self.bc_map)
 
+    # ------------------------------------------------------------------
+    def _scan_usage(self, targets, monitors) -> None:
+        used_v: set = set()
+        used_l: set = set()
+
+        def mark(table_by_name_name_ids, kind, pid, name):
+            if pid:
+                (used_v if kind == "v" else used_l).add(pid)
+            elif name is not None:
+                ids = table_by_name_name_ids.get(name)
+                if ids:
+                    (used_v if kind == "v" else used_l).update(ids)
+
+        for tgt in targets:
+            if not isinstance(tgt, dict):
+                continue
+            for blk in (tgt.get("blocks") or {}).values():
+                if not isinstance(blk, dict):
+                    continue
+                fields = blk.get("fields")
+                if isinstance(fields, dict):
+                    for k, fv in fields.items():
+                        if not isinstance(fv, list) or not fv:
+                            continue
+                        fid = fv[1] if len(fv) > 1 else None
+                        if k == "VARIABLE":
+                            mark(self.var_name_ids, "v", fid, fv[0])
+                        elif k == "LIST":
+                            mark(self.list_name_ids, "l", fid, fv[0])
+                inputs = blk.get("inputs")
+                if not isinstance(inputs, dict):
+                    continue
+                for v in inputs.values():
+                    if not isinstance(v, list):
+                        continue
+                    for item in v[1:]:
+                        if isinstance(item, list) and item and item[0] in (12, 13):
+                            name = item[1] if len(item) > 1 else None
+                            pid = item[2] if len(item) > 2 else None
+                            if item[0] == 12:
+                                mark(self.var_name_ids, "v", pid, name)
+                            else:
+                                mark(self.list_name_ids, "l", pid, name)
+        for mon in monitors or []:
+            if not isinstance(mon, dict):
+                continue
+            op = mon.get("opcode")
+            if op not in ("data_variable", "data_listcontents"):
+                continue
+            mid = mon.get("id")
+            pkey = "VARIABLE" if op == "data_variable" else "LIST"
+            pname = (mon.get("params") or {}).get(pkey)
+            table = self.var_map if op == "data_variable" else self.list_map
+            if isinstance(mid, str) and mid in table:
+                (used_v if op == "data_variable" else used_l).add(mid)
+            elif pname is not None:
+                ids = (self.var_name_ids if op == "data_variable"
+                       else self.list_name_ids).get(pname)
+                if ids:
+                    (used_v if op == "data_variable" else used_l).update(ids)
+        self._used_var_ids = used_v
+        self._used_list_ids = used_l
+
+    def _drop_unused(self, targets) -> None:
+        """shorten_ids=False のときの元キーままの除去。"""
+        st = self.stats
+        for tgt in targets:
+            if not isinstance(tgt, dict):
+                continue
+            variables = tgt.get("variables")
+            if isinstance(variables, dict):
+                drop = [k for k in variables if k not in self._used_var_ids]
+                for k in drop:
+                    del variables[k]
+                st["vars_removed"] += len(drop)
+            lists = tgt.get("lists")
+            if isinstance(lists, dict):
+                drop = [k for k in lists if k not in self._used_list_ids]
+                for k in drop:
+                    del lists[k]
+                st["lists_removed"] += len(drop)
+
     def _rename_stores(self, targets) -> None:
+        drop_v = self.options.remove_unused
+        st = self.stats
         for tgt in targets:
             if not isinstance(tgt, dict):
                 continue
             variables = tgt.get("variables")
             if isinstance(variables, dict) and variables:
-                tgt["variables"] = {
-                    self.var_map[k][0]:
-                        [self.var_map[k][1]] + list(v[1:]) if k in self.var_map else v
-                    for k, v in variables.items()
-                }
+                out = {}
+                for k, v in variables.items():
+                    m = self.var_map.get(k)
+                    if m is None:
+                        out[k] = v
+                        continue
+                    if drop_v and k not in self._used_var_ids:
+                        st["vars_removed"] += 1
+                        continue
+                    out[m[0]] = [m[1]] + list(v[1:])
+                tgt["variables"] = out
             lists = tgt.get("lists")
             if isinstance(lists, dict) and lists:
-                tgt["lists"] = {
-                    self.list_map[k][0]:
-                        [self.list_map[k][1]] + list(v[1:]) if k in self.list_map else v
-                    for k, v in lists.items()
-                }
+                out = {}
+                for k, v in lists.items():
+                    m = self.list_map.get(k)
+                    if m is None:
+                        out[k] = v
+                        continue
+                    if drop_v and k not in self._used_list_ids:
+                        st["lists_removed"] += 1
+                        continue
+                    out[m[0]] = [m[1]] + list(v[1:])
+                tgt["lists"] = out
             broadcasts = tgt.get("broadcasts")
             if isinstance(broadcasts, dict) and broadcasts:
                 out = {}
@@ -256,6 +370,8 @@ class Compressor:
 
         blocks = tgt.get("blocks")
         id_map = {}
+        if o.compress_procs and isinstance(blocks, dict) and blocks:
+            self._compress_procs(blocks)
         if isinstance(blocks, dict) and o.shorten_ids and blocks:
             tgt["blocks"], id_map = self._rename_blocks(blocks)
             # 注: "blocks" は sb3 スキーマで必須のため、空でも削除しない
@@ -266,6 +382,120 @@ class Compressor:
             for c in tgt["comments"].values():
                 if isinstance(c, dict) and c.get("blockId") in id_map:
                     c["blockId"] = id_map[c["blockId"]]
+
+    def _compress_procs(self, blocks: dict) -> None:
+        """定義のproccode・引数名を短い名前へ置き換え、呼び出し側と引数報告ブロックを追従させる。"""
+        st = self.stats
+        protos = {}
+        defs = []          # (hat_id, proto_id)
+        calls = []
+        reporters = set()
+        for bid, b in blocks.items():
+            if not isinstance(b, dict):
+                continue
+            op = b.get("opcode")
+            if op == "procedures_prototype":
+                protos[bid] = b
+            elif op == "procedures_definition":
+                cb = (b.get("inputs") or {}).get("custom_block")
+                pid = cb[1] if isinstance(cb, list) and len(cb) > 1 \
+                    and isinstance(cb[1], str) else None
+                if pid:
+                    defs.append((bid, pid))
+            elif op == "procedures_call":
+                calls.append(b)
+            elif isinstance(op, str) and op.startswith("argument_reporter"):
+                reporters.add(bid)
+
+        if not protos or not defs:
+            return
+
+        # 旧proccodeでグループ化(重複するproccodeはバインドが曖昧なため触らない)
+        groups = {}
+        for hat, pid in defs:
+            p = protos.get(pid)
+            mut = (p or {}).get("mutation") or {}
+            old = mut.get("proccode")
+            if isinstance(old, str) and old:
+                groups.setdefault(old, []).append((hat, pid))
+
+        retained = {old for old, g in groups.items() if len(g) > 1}
+        proc_map = {}
+        argmaps = {}      # proto_id -> {old_argname: new_argname}
+        used_new = set(retained)
+        i = 0
+        for old, grp in groups.items():
+            if len(grp) > 1:
+                continue
+            while True:
+                i += 1
+                cand = encode_id(i)
+                if cand not in used_new and cand != old:
+                    break
+            used_new.add(cand)
+            proc_map[old] = cand
+            st["procs_renamed"] += 1
+
+        # 引数名の短縮(proccodeが重複している定義も各定義内では安全)
+        for hat, pid in defs:
+            p = protos.get(pid)
+            if not p:
+                continue
+            mut = p.get("mutation")
+            if not isinstance(mut, dict):
+                continue
+            old_code = mut.get("proccode")
+            if old_code in proc_map:
+                mut["proccode"] = proc_map[old_code]
+            raw = mut.get("argumentnames")
+            try:
+                names = json.loads(raw) if isinstance(raw, str) else None
+            except json.JSONDecodeError:
+                names = None
+            if not isinstance(names, list) or not names:
+                continue
+            new_names = [f"a{j}" for j in range(len(names))]
+            amap = {o2: n2 for o2, n2 in zip(names, new_names) if o2 != n2}
+            if amap:
+                argmaps[pid] = amap
+                st["args_renamed"] += len(amap)
+            mut["argumentnames"] = json.dumps(new_names, ensure_ascii=False,
+                                              separators=(",", ":"))
+
+        for b in calls:
+            mut = b.get("mutation")
+            if isinstance(mut, dict) and mut.get("proccode") in proc_map:
+                mut["proccode"] = proc_map[mut["proccode"]]
+
+        # 定義配下の引数報告ブロックの参照名を更新
+        for hat, pid in defs:
+            amap = argmaps.get(pid)
+            if not amap:
+                continue
+            stack = [hat]
+            visited = set()
+            while stack:
+                cur = stack.pop()
+                if cur in visited:
+                    continue
+                visited.add(cur)
+                blk = blocks.get(cur)
+                if not isinstance(blk, dict):
+                    continue
+                if cur in reporters:
+                    fv = blk.get("fields", {}).get("VALUE")
+                    if isinstance(fv, list) and fv and fv[0] in amap:
+                        fv[0] = amap[fv[0]]
+                inputs = blk.get("inputs")
+                if isinstance(inputs, dict):
+                    for v in inputs.values():
+                        if isinstance(v, list):
+                            for item in v[1:]:
+                                if isinstance(item, str):
+                                    stack.append(item)
+                nxt = blk.get("next")
+                if isinstance(nxt, str) and nxt:
+                    stack.append(nxt)
 
     def _strip_block_defaults(self, blocks: dict) -> None:
         st = self.stats
@@ -286,15 +516,57 @@ class Compressor:
                 if blk.get(key) == {}:
                     del blk[key]
                     st["fields_removed"] += 1
-            if blk.get("parent") is None:
-                del blk["parent"]
+            # NOTE: keep "parent": null on top-level blocks. scratch-vm's
+            # Blocks.getTopLevelScript() walks while parent !== null, so a
+            # missing parent field (undefined) makes it index _blocks[undefined]
+            # and crash when the script glows (e.g. interpreter mode in the editor).
 
     def _rename_blocks(self, blocks: dict) -> dict:
         o = self.options
         st = self.stats
         id_map: dict = {}
-        counter = [0]
         processed = set()
+
+        # 使用回数の事前集計(キー自身1回+参照されるごとに加算)
+        counts: dict = {}
+        seen: dict = {}
+
+        def touch(key, pos):
+            if key in counts:
+                counts[key] += 1
+            else:
+                counts[key] = 1
+                seen[key] = pos
+
+        pos = 0
+        for bid, blk in blocks.items():
+            touch(bid, pos)
+            pos += 1
+            if not isinstance(blk, dict):
+                continue
+            inputs = blk.get("inputs")
+            if isinstance(inputs, dict):
+                for v in inputs.values():
+                    if not isinstance(v, list):
+                        continue
+                    for item in v[1:]:
+                        if isinstance(item, str):
+                            touch(item, pos)
+            nxt = blk.get("next")
+            if isinstance(nxt, str) and nxt:
+                touch(nxt, pos)
+            par = blk.get("parent")
+            if isinstance(par, str) and par:
+                touch(par, pos)
+
+        # 頻出IDほど短い純英数キーを得る
+        if o.freq_ids:
+            ordered = sorted(counts, key=lambda k: (-counts[k], seen[k]))
+        else:
+            ordered = sorted(counts, key=lambda k: seen[k])
+        for i, k in enumerate(ordered):
+            id_map[k] = encode_id(i + 1)
+        counter = [len(ordered)]
 
         def nid(old: str) -> str:
             m = id_map.get(old)
@@ -332,10 +604,10 @@ class Compressor:
                 return [t, m[1], m[0]] + p[3:]
             return p
 
-        def process_from(old_start: str) -> None:
-            work = [old_start]
+        def process_from(old_start: str, reachable: bool = False) -> None:
+            work = [(old_start, reachable)]
             while work:
-                old = work.pop()
+                old, reachable = work.pop()
                 if old in processed:
                     continue
                 nid(old)
@@ -359,7 +631,7 @@ class Compressor:
                             if isinstance(item, str):
                                 ref = nid(item)
                                 out.append(ref)
-                                work.append(item)
+                                work.append((item, reachable))
                                 changed = True
                             elif isinstance(item, list) and item and isinstance(item[0], int):
                                 out.append(map_primitive(item))
@@ -398,13 +670,19 @@ class Compressor:
                 if blk.get("topLevel") is not True and "topLevel" in blk:
                     blk.pop("topLevel", None)
                     st["fields_removed"] += 1
-                if blk.get("parent") is None:
-                    blk.pop("parent", None)
+                # Keep "parent": null on top-level blocks; see _strip_block_defaults.
 
                 nxt = blk.get("next")
                 if isinstance(nxt, str) and nxt:
                     blk["next"] = nid(nxt)
-                    work.append(nxt)
+                    work.append((nxt, reachable))
+                elif reachable:
+                    # Keep an explicit null on reachable chain ends: scratch-vm's
+                    # interpreter checks `nextBlockId !== null`, so a missing key
+                    # (undefined) makes promise-returning blocks re-enter their
+                    # stack frame. Orphan blocks are never executed, so they can
+                    # keep the smaller missing-key form.
+                    blk["next"] = None
                 else:
                     blk.pop("next", None)
 
@@ -413,7 +691,7 @@ class Compressor:
         for top in tops:
             if self.cancelled():
                 raise Cancelled()
-            process_from(top)
+            process_from(top, True)
 
         # 到達不可能なブロック(過去ツールの残骸等)も必ず改名する。
         # 残すと元の短い英数キーが生成IDと衝突し、再構築時にサイレントに
@@ -424,13 +702,15 @@ class Compressor:
             if old not in processed:
                 process_from(old)
 
-        for old, blk in blocks.items():
-            if isinstance(blk, dict) and "parent" in blk:
-                p = blk["parent"]
-                if p is None:
-                    del blk["parent"]
-                elif isinstance(p, str) and p in id_map:
-                    blk["parent"] = id_map[p]
+        for blk in blocks.values():
+            if not isinstance(blk, dict):
+                continue
+            p = blk.get("parent")
+            if isinstance(p, str) and p in id_map:
+                blk["parent"] = id_map[p]
+            elif p is None:
+                # Keep an explicit null so Blocks.getTopLevelScript() can stop.
+                blk["parent"] = None
 
         st["blocks_renamed"] += counter[0]
         new_blocks = {id_map.get(k, k): v for k, v in blocks.items()}
@@ -668,6 +948,9 @@ def run_gui() -> int:
             self.opt_strip = tk.BooleanVar(value=True)
             self.opt_ids = tk.BooleanVar(value=True)
             self.opt_click = tk.BooleanVar(value=False)
+            self.opt_unused = tk.BooleanVar(value=True)
+            self.opt_procs = tk.BooleanVar(value=True)
+            self.opt_freq = tk.BooleanVar(value=True)
             self.pct_var = tk.DoubleVar(value=0.0)
             self.phase_var = tk.StringVar(value="待機中")
 
@@ -703,9 +986,18 @@ def run_gui() -> int:
             ttk.Checkbutton(fopt, variable=self.opt_ids,
                             text="ID短縮（ブロックID・変数/リスト/放送の名前を短く改名）"
                             ).grid(row=1, column=0, sticky="w")
+            ttk.Checkbutton(fopt, variable=self.opt_freq,
+                            text="頻出IDほど短いキーを割当（参照回数順に最適化）"
+                            ).grid(row=2, column=0, sticky="w")
+            ttk.Checkbutton(fopt, variable=self.opt_unused,
+                            text="未使用の変数・リストを削除（どこからも参照されないもの）"
+                            ).grid(row=3, column=0, sticky="w")
+            ttk.Checkbutton(fopt, variable=self.opt_procs,
+                            text="定義名（proccode）と引数名を短縮し全参照を置換"
+                            ).grid(row=4, column=0, sticky="w")
             ttk.Checkbutton(fopt, variable=self.opt_click,
                             text="スプライトクリック→ステージクリックに書き換え（非推奨：挙動が変わります）"
-                            ).grid(row=2, column=0, sticky="w")
+                            ).grid(row=5, column=0, sticky="w")
 
             btns = ttk.Frame(outer)
             btns.pack(fill="x", pady=8)
@@ -794,7 +1086,10 @@ def run_gui() -> int:
                 return
             opts = Options(strip_defaults=self.opt_strip.get(),
                            shorten_ids=self.opt_ids.get(),
-                           click_to_stage=self.opt_click.get())
+                           click_to_stage=self.opt_click.get(),
+                           remove_unused=self.opt_unused.get(),
+                           compress_procs=self.opt_procs.get(),
+                           freq_ids=self.opt_freq.get())
             self.payload = None
             self.cancel_flag.clear()
             self.set_running(True)
@@ -874,7 +1169,8 @@ def run_gui() -> int:
                 f"最終ファイル{kind}: {human_size(s['new_file_size'])}   |   "
                 f"ブロックID改名 {st['blocks_renamed']} / 変数 {st['vars_renamed']} / "
                 f"リスト {st['lists_renamed']} / 放送 {st['broadcasts_renamed']} / "
-                f"既定値削除 {st['fields_removed']}")
+                f"既定値削除 {st['fields_removed']} / 未使用削除 "
+                f"{st['vars_removed'] + st['lists_removed']} / 定義短縮 {st['procs_renamed']}")
             self.log_line(f"完了: 圧縮率 {s['ratio']:.1f}% 削減 "
                           f"({human_size(s['orig_json_size'])} → "
                           f"{human_size(s['new_json_size'])})")
