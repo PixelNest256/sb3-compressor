@@ -28,6 +28,13 @@ import zipfile
 
 CLOUD_PREFIX = "\u2601"
 
+# Built-in properties handled by sensing_of before its variable-name lookup.
+# A variable with one of these names is shadowed on that target type, so the
+# PROPERTY field must not be renamed to the variable's shortened name.
+SENSING_STAGE_PROPERTIES = {"background #", "backdrop #", "backdrop name", "volume"}
+SENSING_SPRITE_PROPERTIES = {"x position", "y position", "direction",
+                             "costume #", "costume name", "size", "volume"}
+
 _ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
 
@@ -144,6 +151,8 @@ class Compressor:
         self.bc_by_name: dict = {}
         self.var_name_ids: dict = {}
         self.list_name_ids: dict = {}
+        self.var_by_target: dict = {}
+        self.stage_name: str | None = None
         self._used_var_ids: set = set()
         self._used_list_ids: set = set()
         self._layer_expect = 0
@@ -187,6 +196,12 @@ class Compressor:
         for idx, tgt in enumerate(targets):
             if not isinstance(tgt, dict):
                 continue
+            tname = tgt.get("name")
+            if tgt.get("isStage"):
+                self.stage_name = tname
+            scope = None
+            if isinstance(tname, str):
+                scope = self.var_by_target.setdefault(tname, {})
             for vid, ent in (tgt.get("variables") or {}).items():
                 name = ent[0] if isinstance(ent, list) and ent else str(ent)
                 cloud = isinstance(name, str) and name.startswith(CLOUD_PREFIX)
@@ -194,6 +209,8 @@ class Compressor:
                 self.var_map[vid] = ("V" + base, (CLOUD_PREFIX + " " if cloud else "") + "V" + base)
                 self.var_by_name.setdefault(name, self.var_map[vid])
                 self.var_name_ids.setdefault(name, set()).add(vid)
+                if scope is not None:
+                    scope.setdefault(name, self.var_map[vid])
             for lid, ent in (tgt.get("lists") or {}).items():
                 name = ent[0] if isinstance(ent, list) and ent else str(ent)
                 base = encode_id(li := li + 1)
@@ -216,18 +233,68 @@ class Compressor:
         used_v: set = set()
         used_l: set = set()
 
-        def mark(table_by_name_name_ids, kind, pid, name):
-            if pid:
-                (used_v if kind == "v" else used_l).add(pid)
+        def mark(kind, pid, name):
+            used = used_v if kind == "v" else used_l
+            known = self.var_map if kind == "v" else self.list_map
+            by_name = self.var_name_ids if kind == "v" else self.list_name_ids
+            if isinstance(pid, str) and pid in known:
+                used.add(pid)
             elif name is not None:
-                ids = table_by_name_name_ids.get(name)
+                # The VM falls back to a name lookup when the serialized ID is
+                # missing or unknown, so keep every store that name can reach.
+                ids = by_name.get(name)
                 if ids:
-                    (used_v if kind == "v" else used_l).update(ids)
+                    used.update(ids)
+
+        def mark_unknown_field(pid):
+            # Some extensions keep a store ID in a non-standard field.  If the
+            # value matches a known store, keep it rather than guessing.
+            if not isinstance(pid, str):
+                return
+            if pid in self.var_map:
+                used_v.add(pid)
+            elif pid in self.list_map:
+                used_l.add(pid)
+
+        def scan_input(node):
+            if not isinstance(node, list):
+                return
+            if node and node[0] in (12, 13):
+                name = node[1] if len(node) > 1 else None
+                pid = node[2] if len(node) > 2 else None
+                mark("v" if node[0] == 12 else "l", pid, name)
+                return
+            for item in node:
+                scan_input(item)
+
+        def scan_ids(node):
+            # Last-resort safety net for extension blocks and unusual formats:
+            # if a store ID appears anywhere in the blocks/monitors, keep it.
+            if isinstance(node, dict):
+                for value in node.values():
+                    scan_ids(value)
+            elif isinstance(node, list):
+                for value in node:
+                    scan_ids(value)
+            elif isinstance(node, str):
+                if node in self.var_map:
+                    used_v.add(node)
+                elif node in self.list_map:
+                    used_l.add(node)
 
         for tgt in targets:
             if not isinstance(tgt, dict):
                 continue
+            scan_ids(tgt.get("blocks"))
             for blk in (tgt.get("blocks") or {}).values():
+                # Standalone variable/list reporters are serialized as
+                # primitive arrays instead of block objects.
+                if isinstance(blk, list):
+                    if blk and blk[0] in (12, 13):
+                        name = blk[1] if len(blk) > 1 else None
+                        pid = blk[2] if len(blk) > 2 else None
+                        mark("v" if blk[0] == 12 else "l", pid, name)
+                    continue
                 if not isinstance(blk, dict):
                     continue
                 fields = blk.get("fields")
@@ -237,26 +304,26 @@ class Compressor:
                             continue
                         fid = fv[1] if len(fv) > 1 else None
                         if k == "VARIABLE":
-                            mark(self.var_name_ids, "v", fid, fv[0])
+                            mark("v", fid, fv[0])
                         elif k == "LIST":
-                            mark(self.list_name_ids, "l", fid, fv[0])
+                            mark("l", fid, fv[0])
+                        else:
+                            mark_unknown_field(fid)
+                    # "sensing_of" reads a variable by name, not by ID.
+                    if blk.get("opcode") == "sensing_of":
+                        prop = fields.get("PROPERTY")
+                        if isinstance(prop, list) and prop and prop[0] is not None:
+                            ids = self.var_name_ids.get(prop[0])
+                            if ids:
+                                used_v.update(ids)
                 inputs = blk.get("inputs")
-                if not isinstance(inputs, dict):
-                    continue
-                for v in inputs.values():
-                    if not isinstance(v, list):
-                        continue
-                    for item in v[1:]:
-                        if isinstance(item, list) and item and item[0] in (12, 13):
-                            name = item[1] if len(item) > 1 else None
-                            pid = item[2] if len(item) > 2 else None
-                            if item[0] == 12:
-                                mark(self.var_name_ids, "v", pid, name)
-                            else:
-                                mark(self.list_name_ids, "l", pid, name)
+                if isinstance(inputs, dict):
+                    for value in inputs.values():
+                        scan_input(value)
         for mon in monitors or []:
             if not isinstance(mon, dict):
                 continue
+            scan_ids(mon)
             op = mon.get("opcode")
             if op not in ("data_variable", "data_listcontents"):
                 continue
@@ -264,13 +331,14 @@ class Compressor:
             pkey = "VARIABLE" if op == "data_variable" else "LIST"
             pname = (mon.get("params") or {}).get(pkey)
             table = self.var_map if op == "data_variable" else self.list_map
+            used = used_v if op == "data_variable" else used_l
+            by_name = self.var_name_ids if op == "data_variable" else self.list_name_ids
             if isinstance(mid, str) and mid in table:
-                (used_v if op == "data_variable" else used_l).add(mid)
+                used.add(mid)
             elif pname is not None:
-                ids = (self.var_name_ids if op == "data_variable"
-                       else self.list_name_ids).get(pname)
+                ids = by_name.get(pname)
                 if ids:
-                    (used_v if op == "data_variable" else used_l).update(ids)
+                    used.update(ids)
         self._used_var_ids = used_v
         self._used_list_ids = used_l
 
@@ -607,6 +675,23 @@ class Compressor:
                 return [t, m[1], m[0]] + p[3:]
             return p
 
+        def sensing_object_name(blk: dict):
+            """OBJECT is normally an input pointing at sensing_of_object_menu."""
+            f = (blk.get("fields") or {}).get("OBJECT")
+            if isinstance(f, list) and f:
+                return f[0]
+            inp = (blk.get("inputs") or {}).get("OBJECT")
+            if isinstance(inp, list):
+                for item in inp[1:]:
+                    if isinstance(item, str):
+                        menu = blocks.get(item)
+                        if (isinstance(menu, dict)
+                                and menu.get("opcode") == "sensing_of_object_menu"):
+                            mf = (menu.get("fields") or {}).get("OBJECT")
+                            if isinstance(mf, list) and mf:
+                                return mf[0]
+            return None
+
         def process_from(old_start: str, reachable: bool = False) -> None:
             work = [(old_start, reachable)]
             while work:
@@ -615,9 +700,19 @@ class Compressor:
                     continue
                 nid(old)
                 blk = blocks.get(old)
+                if isinstance(blk, list):
+                    # Standalone primitive (e.g. a variable reporter left on
+                    # the workspace): its name/ID must follow the renamed store.
+                    processed.add(old)
+                    blocks[old] = map_primitive(blk)
+                    continue
                 if not isinstance(blk, dict):
                     continue
                 processed.add(old)
+
+                # Resolve the target before input IDs are remapped below.
+                sense_obj = (sensing_object_name(blk)
+                             if blk.get("opcode") == "sensing_of" else None)
 
                 if o.click_to_stage and blk.get("opcode") == "event_whenthisspriteclicked":
                     blk["opcode"] = "event_whenstageclicked"
@@ -654,6 +749,22 @@ class Compressor:
                             continue
                         name = fv[0]
                         fid = fv[1] if len(fv) > 1 else None
+                        if k == "PROPERTY" and blk.get("opcode") == "sensing_of":
+                            obj_name = sense_obj
+                            if obj_name == "_stage_":
+                                obj_name = self.stage_name
+                            if isinstance(obj_name, str):
+                                if obj_name == self.stage_name:
+                                    if name in SENSING_STAGE_PROPERTIES:
+                                        continue
+                                elif name in SENSING_SPRITE_PROPERTIES:
+                                    continue
+                            scope = (self.var_by_target.get(obj_name)
+                                     if isinstance(obj_name, str) else None)
+                            sm = scope.get(name) if scope else None
+                            if sm is not None:
+                                fields[k] = [sm[1]] + fv[1:]
+                            continue
                         m = None
                         if k == "VARIABLE":
                             m = (self.var_map.get(fid) if fid else None) or self.var_by_name.get(name)

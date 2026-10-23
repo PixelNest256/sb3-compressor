@@ -10,8 +10,9 @@ the project's runtime behavior the same:
   renamed too so they cannot collide with newly generated IDs.
 - **Store renaming** — variable, list, and broadcast names are renamed to short
   generated IDs (`V1`, `L2`, `B3`, ...). Cloud variables keep their `☁` prefix.
-- **Unused store removal** — variables and lists that no block or monitor reads
-  are dropped (enabled by default).
+- **Unused store removal** — variables and lists that are not referenced by any
+  block, monitor, standalone reporter, or `sensing_of` lookup are dropped
+  (enabled by default; detection is conservative).
 - **Custom block compression** — `proccode` and argument names of custom blocks
   are shortened, with definitions, calls, prototypes, and argument reporters
   updated together.
@@ -71,7 +72,7 @@ Details: blocks renamed 8421 / variables 12 / lists 3 / broadcasts 5
 | --- | --- | --- |
 | `strip_defaults` | on | Remove fields the VM restores on load. |
 | `shorten_ids` | on | Rename block IDs and stores to short generated IDs. |
-| `remove_unused` | on | Drop variables/lists that are never read. |
+| `remove_unused` | on | Drop variables/lists that are never referenced (conservative). |
 | `compress_procs` | on | Shorten custom block proccodes and argument names. |
 | `freq_ids` | on | Give the most frequently referenced blocks the shortest IDs. |
 | `click_to_stage` | off | Rewrite sprite-click hats into stage-click hats. **Changes behavior.** |
@@ -80,8 +81,9 @@ Details: blocks renamed 8421 / variables 12 / lists 3 / broadcasts 5
 
 1. Read the `.sb3` zip and parse `project.json`.
 2. Walk every target and collect variable / list / broadcast definitions.
-3. Scan block fields, inputs, and monitors to find which stores are actually
-   used. Unused variables and lists are removed.
+3. Scan block fields, inputs (including standalone primitive reporters),
+   monitors, and `sensing_of` property lookups to find which stores are actually
+   used. Unused variables and lists are removed; ambiguous references are kept.
 4. Shorten custom block proccodes and argument names, updating definitions,
    calls, prototypes, and argument reporters.
 5. Assign short block IDs by reference frequency, then remap `parent`, `next`,
@@ -122,8 +124,10 @@ python test_sb3_compressor.py
 
 - Cloud variables keep their `☁` prefix; only the name after the prefix is
   shortened.
-- Unused store removal changes the variable/list palette in the editor. Script
-  behavior is unaffected because those stores are never read.
+- Unused store removal changes the variable/list palette in the editor. Detection
+  is intentionally conservative: a store is kept if its ID or name is referenced
+  anywhere the VM can resolve it (including `sensing_of` and standalone
+  reporters), so a few unused stores may remain.
 - The optional *"sprite click → stage click"* option rewrites
   `event_whenthisspriteclicked` blocks into `event_whenstageclicked`. This
   changes behavior and is off by default.

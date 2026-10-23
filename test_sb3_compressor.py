@@ -178,6 +178,13 @@ def validate_project(project):
     for t in project.get("targets", []):
         blocks = t.get("blocks") or {}
         for bid, b in blocks.items():
+            if isinstance(b, list):
+                if b and b[0] in (12, 13):
+                    tab = var_ids if b[0] == 12 else list_ids
+                    pid = b[2] if len(b) > 2 else None
+                    if pid not in tab:
+                        errs.append(f"{bid}: 単独レポーターの変数/リストIDが存在しない ({pid})")
+                continue
             if not isinstance(b, dict):
                 continue
             nxt = b.get("next")
@@ -481,6 +488,70 @@ def main():
     print(f"[OK] 未使用変数・リスト削除 "
           f"(var={c7.stats['vars_removed']} list={c7.stats['lists_removed']} 削除, "
           f"モニター参照は保持)")
+
+    # ---------- 6b) 単独レポーター(primitive array)とID不明時の名前参照 ----------
+    p7b = json.loads(json.dumps(build_sample()))
+    st7b = p7b["targets"][0]
+    ARR_VID = "arrVar00000000000000"
+    ARR_LID = "arrList0000000000000"
+    STALE_VID = "staleVar000000000000"
+    SENSE_VID = "sensedVar000000000000"
+    SENSE_OBJ = "sensedObjMenu000000"
+    st7b["variables"][ARR_VID] = ["arrVar", 0]
+    st7b["lists"][ARR_LID] = ["arrList", []]
+    st7b["variables"][STALE_VID] = ["staleVar", 0]
+    st7b["variables"][SENSE_VID] = ["sensed", 0]
+    # 単独の変数/リストレポーターは block オブジェクトではなく配列で保存される
+    st7b["blocks"]["arrVarReporter00000"] = [12, "arrVar", ARR_VID, 10, 20]
+    st7b["blocks"]["arrListReporter0000"] = [13, "arrList", ARR_LID, 10, 50]
+    # IDが欠落/不整合でもVMは名前で解決するため、名前側の定義を残す必要がある
+    st7b["blocks"]["staleRef00000000000"] = {
+        "opcode": "data_setvariableto", "next": None, "parent": None,
+        "inputs": {"VALUE": [1, [10, "1"]]},
+        "fields": {"VARIABLE": ["staleVar", "missing-id"]},
+        "shadow": False, "topLevel": False,
+    }
+    # sensing_of は PROPERTY の変数名で実行時に参照する(IDを持たない)。
+    # OBJECT は sensing_of_object_menu の shadow ブロックを入力に持つ。
+    st7b["blocks"]["sensingOf000000000"] = {
+        "opcode": "sensing_of", "next": None, "parent": None,
+        "inputs": {"OBJECT": [1, SENSE_OBJ]},
+        "fields": {"PROPERTY": ["sensed", None]},
+        "shadow": False, "topLevel": True, "x": 200, "y": 200,
+    }
+    st7b["blocks"][SENSE_OBJ] = {
+        "opcode": "sensing_of_object_menu", "next": None,
+        "parent": "sensingOf000000000", "inputs": {},
+        "fields": {"OBJECT": ["_stage_", None]},
+        "shadow": True, "topLevel": False,
+    }
+    c7b = Compressor(Options())
+    q7b = c7b.run(p7b)
+    svars7b, slists7b, _ = flatten(q7b)
+    arr_v = next(b for b in q7b["targets"][0]["blocks"].values()
+                 if isinstance(b, list) and b[0] == 12)
+    arr_l = next(b for b in q7b["targets"][0]["blocks"].values()
+                 if isinstance(b, list) and b[0] == 13)
+    assert arr_v[2] in svars7b and svars7b[arr_v[2]][0] == arr_v[1], \
+        f"単独変数レポーターが追従していない: {arr_v}"
+    assert arr_l[2] in slists7b and slists7b[arr_l[2]][0] == arr_l[1], \
+        f"単独リストレポーターが追従していない: {arr_l}"
+    assert len(svars7b) == 6, \
+        f"単独レポーター/名前参照の変数が削除された: {[v[0] for v in svars7b.values()]}"
+    assert len(slists7b) == 2, \
+        f"単独レポーター/モニターのリストが削除された: {[v[0] for v in slists7b.values()]}"
+    var_field_ids = {b["fields"]["VARIABLE"][1]
+                     for b in q7b["targets"][0]["blocks"].values()
+                     if isinstance(b, dict)
+                     and isinstance((b.get("fields") or {}).get("VARIABLE"), list)}
+    assert var_field_ids <= set(svars7b), "名前参照の変数IDが定義に存在しない"
+    sense_block = next(b for b in q7b["targets"][0]["blocks"].values()
+                       if isinstance(b, dict) and b.get("opcode") == "sensing_of")
+    assert sense_block["fields"]["PROPERTY"][0] == c7b.var_map[SENSE_VID][1], \
+        f"sensing_of の PROPERTY が改名に追従していない: {sense_block['fields']}"
+    errs7b = validate_project(q7b)
+    assert not errs7b, errs7b
+    print("[OK] 単独レポーター保持・改名 / ID不明時の名前フォールバック / sensing_of 参照")
 
     # ---------- 7) 定義名・引数名の短縮 ----------
     p8 = json.loads(json.dumps(build_sample()))
