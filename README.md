@@ -39,8 +39,8 @@ Run with no arguments:
 python sb3_compressor.py
 ```
 
-Pick a `.sb3` (or a raw `project.json`) file, press **Start**, then save the
-result when it finishes. The GUI exposes the individual options.
+Pick a `.sb3` (or a raw `project.json`) file, press **Start Compression**, then
+save the result when it finishes. The GUI exposes the individual options.
 
 ### CLI
 
@@ -54,18 +54,16 @@ input. The CLI uses the default options listed below.
 Example output:
 
 ```text
-[load] 読み込み中: myproject.sb3
-[parse] JSON解析中…
+[load] Loading: myproject.sb3
+[parse] Parsing JSON...
 ...
---------------------------------------------------
-元 project.json : 1,234.5 KB
-圧縮後          : 456.7 KB  (圧縮率 63.0% 削減)
-最終ファイル    : myproject_compressed.sb3 (1.1 MB)
-内訳: ブロックID改名 8421 / 変数 12 / リスト 3 / 放送 5
-      既定値削除 19032 / モニター更新 4
+--------------------------------------------------------------
+Original project.json : 1,234.5 KB
+Compressed            : 456.7 KB  (63.0% smaller)
+Output file           : myproject_compressed.sb3 (1.1 MB)
+Details: blocks renamed 8421 / variables 12 / lists 3 / broadcasts 5
+         defaults removed 19032 / unused vars/lists removed 18 / custom blocks shortened 7 / monitors updated 4
 ```
-
-(Progress messages are shown in Japanese.)
 
 ## Options
 

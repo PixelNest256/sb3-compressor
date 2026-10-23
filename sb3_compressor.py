@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""SB3 Compressor - Scratch (TurboWarp) プロジェクト .sb3 の project.json を可逆圧縮するツール。
+"""SB3 Compressor - behavior-preserving compressor for Scratch (TurboWarp) .sb3 project files.
 
-Scratch作品「sb3 Compressor」の Python 移植版。
-  - ブロックID / 変数・リスト・放送の名前を短いIDへ一括改名
-  - VMが補完できるデフォルト値フィールドを削除
-  - JSONをミニファイし、assetsをそのまま同梱して .sb3 を再パック
+Python port of the Scratch project "sb3 Compressor".
+  - Rename block IDs and variable/list/broadcast names to short IDs
+  - Remove unused variables and lists
+  - Shorten custom block proccodes and argument names
+  - Remove default-valued fields that the VM reconstructs
+  - Minify JSON and repack the .sb3 with its assets unchanged
 
-使い方:
-  python sb3_compressor.py                -> GUI 起動
-  python sb3_compressor.py in.sb3 [out]   -> CLI モード
+Usage:
+  python sb3_compressor.py                -> launch the GUI
+  python sb3_compressor.py in.sb3 [out]   -> CLI mode
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ import queue
 import re
 import sys
 import threading
+import traceback
 import zipfile
 
 CLOUD_PREFIX = "\u2601"
@@ -114,7 +117,7 @@ def default_output_path(in_path: str) -> str:
 
 
 class Compressor:
-    """project.json (dict) を受け取り、圧縮済み dict を返す。"""
+    """Takes a parsed project.json dict and returns a compressed dict."""
 
     def __init__(self, options: Options | None = None, progress=None, cancelled=None):
         self.options = options or Options()
@@ -148,12 +151,12 @@ class Compressor:
     def run(self, project: dict) -> dict:
         targets = project.get("targets")
         if not isinstance(targets, list) or not targets:
-            raise CompressError("'targets' が見つかりません。project.json を入力してください")
+            raise CompressError("'targets' not found. Please provide a project.json.")
 
-        self.progress("collect", 0.0, "変数・リスト・放送を収集中…")
+        self.progress("collect", 0.0, "Collecting variables, lists, and broadcasts...")
         self._collect(targets)
         if self.options.remove_unused:
-            self.progress("collect", 1.0, "未使用の変数・リストを解析中…")
+            self.progress("collect", 1.0, "Analyzing unused variables and lists...")
             self._scan_usage(targets, project.get("monitors"))
         if self.options.shorten_ids:
             self._rename_stores(targets)
@@ -165,16 +168,16 @@ class Compressor:
         for i, tgt in enumerate(targets):
             if self.cancelled():
                 raise Cancelled()
-            self.progress("targets", i / n, f"ターゲット処理中 {i + 1}/{n}")
+            self.progress("targets", i / n, f"Processing target {i + 1}/{n}")
             self._process_target(tgt)
-            self.progress("targets", (i + 1) / n, f"ターゲット処理中 {i + 1}/{n}")
+            self.progress("targets", (i + 1) / n, f"Processing target {i + 1}/{n}")
 
         if self.cancelled():
             raise Cancelled()
-        self.progress("finalize", 0.5, "モニター・メタ情報処理中…")
+        self.progress("finalize", 0.5, "Processing monitors and metadata...")
         self._process_monitors(project)
         self._process_root(project)
-        self.progress("finalize", 1.0, "完了")
+        self.progress("finalize", 1.0, "Done")
         return project
 
     # ------------------------------------------------------------------
@@ -202,7 +205,7 @@ class Compressor:
                 base = encode_id(bi := bi + 1)
                 self.bc_map[bid] = ("B" + base, "B" + base)
                 self.bc_by_name.setdefault(name, self.bc_map[bid])
-            self.progress("collect", (idx + 1) / total, "変数・リスト・放送を収集中…")
+            self.progress("collect", (idx + 1) / total, "Collecting variables, lists, and broadcasts...")
         st = self.stats
         st["vars_renamed"] = len(self.var_map)
         st["lists_renamed"] = len(self.list_map)
@@ -715,7 +718,7 @@ class Compressor:
         st["blocks_renamed"] += counter[0]
         new_blocks = {id_map.get(k, k): v for k, v in blocks.items()}
         if len(new_blocks) != len(blocks):
-            raise CompressError("内部エラー: ブロックID改名で衝突が発生しました")
+            raise CompressError("Internal error: block ID collision during renaming")
         return new_blocks, id_map
 
     # ------------------------------------------------------------------
@@ -768,11 +771,11 @@ class Compressor:
 
 # ----------------------------------------------------------------------
 def load_input(in_path: str, progress=lambda p, f, m: None):
-    """ファイルを読み、(project_dict, container, pj_raw_bytes, entries) を返す。"""
-    progress("load", 0.2, f"読み込み中: {os.path.basename(in_path)}")
+    """Load a file and return (project_dict, container, pj_raw_bytes, entries)."""
+    progress("load", 0.2, f"Loading: {os.path.basename(in_path)}")
     with open(in_path, "rb") as f:
         raw = f.read()
-    progress("load", 1.0, f"読み込み完了 ({human_size(len(raw))})")
+    progress("load", 1.0, f"Loaded ({human_size(len(raw))})")
 
     lower = in_path.lower()
     if lower.endswith(".json"):
@@ -782,26 +785,26 @@ def load_input(in_path: str, progress=lambda p, f, m: None):
         with zipfile.ZipFile(io.BytesIO(raw)) as zf:
             names = zf.namelist()
             if "project.json" not in names:
-                raise CompressError(".sb3 内に project.json が見つかりません")
+                raise CompressError("project.json was not found inside the .sb3 file")
             pj_raw = zf.read("project.json")
             entries = [(i.filename, zf.read(i.filename))
                        for i in zf.infolist()
                        if i.filename != "project.json" and not i.filename.endswith("/")]
     else:
-        raise CompressError("対応形式は .sb3 または project.json (.json) です")
+        raise CompressError("Unsupported format. Expected .sb3 or project.json (.json)")
 
     try:
         text = pj_raw.decode("utf-8-sig")
     except UnicodeDecodeError as e:
-        raise CompressError(f"project.json の文字コードを読めません: {e}")
-    progress("parse", 0.4, "JSON解析中…")
+        raise CompressError(f"Could not decode project.json: {e}")
+    progress("parse", 0.4, "Parsing JSON...")
     try:
         project = json.loads(text)
     except json.JSONDecodeError as e:
-        raise CompressError(f"JSON解析エラー: {e}")
+        raise CompressError(f"JSON parse error: {e}")
     if not isinstance(project, dict):
-        raise CompressError("JSONのルートがオブジェクトではありません")
-    progress("parse", 1.0, f"JSON解析完了 ({human_size(len(pj_raw))})")
+        raise CompressError("The root of the JSON document is not an object")
+    progress("parse", 1.0, f"JSON parsed ({human_size(len(pj_raw))})")
     return project, ("sb3" if entries or lower.endswith(".sb3") else "json"), pj_raw, entries
 
 
@@ -811,9 +814,9 @@ def package_sb3(entries, project_bytes: bytes, progress=lambda p, f, m: None) ->
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for i, (name, data) in enumerate(entries):
             zf.writestr(name, data)
-            progress("package", i / total, "SB3再パック中…")
+            progress("package", i / total, "Repacking .sb3...")
         zf.writestr("project.json", project_bytes)
-    progress("package", 1.0, "SB3再パック完了")
+    progress("package", 1.0, "Repack complete")
     return buf.getvalue()
 
 
@@ -830,16 +833,16 @@ def dumps_compact(project: dict) -> bytes:
 
 def compress_file(in_path: str, options: Options,
                   progress=lambda p, f, m: None, cancelled=lambda: False) -> dict:
-    """入力ファイルから最終出力バイト列まで一括処理し、結果payloadを返す。"""
+    """Run the full pipeline from input file to output bytes and return the result payload."""
     project, container, pj_raw, entries = load_input(in_path, progress)
     comp = Compressor(options, progress, cancelled)
     project = comp.run(project)
 
     if cancelled():
         raise Cancelled()
-    progress("serialize", 0.5, "JSON生成中…")
+    progress("serialize", 0.5, "Serializing JSON...")
     out_bytes = dumps_compact(project)
-    progress("serialize", 1.0, f"JSON生成完了 ({human_size(len(out_bytes))})")
+    progress("serialize", 1.0, f"JSON serialized ({human_size(len(out_bytes))})")
 
     final = package_sb3(entries, out_bytes, progress) if container == "sb3" else out_bytes
 
@@ -871,13 +874,13 @@ for _name, _w in PROGRESS_WEIGHTS:
 
 def run_cli(argv) -> int:
     if not argv:
-        print("使い方: python sb3_compressor.py <入力.sb3|project.json> [出力先]")
-        print("       引数なしで起動するとGUIが開きます")
+        print("Usage: python sb3_compressor.py <input.sb3|project.json> [output]")
+        print("       Run without arguments to open the GUI.")
         return 2
     in_path = argv[0]
     out_path = argv[1] if len(argv) > 1 else default_output_path(in_path)
     if not os.path.isfile(in_path):
-        print(f"エラー: 入力ファイルが見つかりません: {in_path}")
+        print(f"Error: input file not found: {in_path}")
         return 1
 
     state = {"pct": -1}
@@ -895,15 +898,15 @@ def run_cli(argv) -> int:
             last_phase[0] = phase
         elif int(pct) != state["pct"]:
             state["pct"] = int(pct)
-            print(f"\r  進捗 {state['pct']:3d}%  {msg[:60]:<60}", end="", flush=True)
+            print(f"\r  Progress {state['pct']:3d}%  {msg[:60]:<60}", end="", flush=True)
 
     try:
         payload = compress_file(in_path, Options(), progress)
     except CompressError as e:
-        print(f"\nエラー: {e}")
+        print(f"\nError: {e}")
         return 1
     except Cancelled:
-        print("\n中止しました")
+        print("\nCancelled.")
         return 130
     print()
 
@@ -911,14 +914,17 @@ def run_cli(argv) -> int:
         f.write(payload["final_bytes"])
     s = payload
     print("-" * 62)
-    print(f"元 project.json : {human_size(s['orig_json_size'])}")
-    print(f"圧縮後          : {human_size(s['new_json_size'])}  "
-          f"(圧縮率 {s['ratio']:.1f}% 削減)")
-    print(f"最終ファイル    : {out_path} ({human_size(s['new_file_size'])})")
+    print(f"Original project.json : {human_size(s['orig_json_size'])}")
+    print(f"Compressed            : {human_size(s['new_json_size'])}  "
+          f"({s['ratio']:.1f}% smaller)")
+    print(f"Output file           : {out_path} ({human_size(s['new_file_size'])})")
     st = s["stats"]
-    print(f"内訳: ブロックID改名 {st['blocks_renamed']} / 変数 {st['vars_renamed']} / "
-          f"リスト {st['lists_renamed']} / 放送 {st['broadcasts_renamed']}")
-    print(f"      既定値削除 {st['fields_removed']} / モニター更新 {st['monitors_updated']}")
+    print(f"Details: blocks renamed {st['blocks_renamed']} / variables {st['vars_renamed']} / "
+          f"lists {st['lists_renamed']} / broadcasts {st['broadcasts_renamed']}")
+    print(f"         defaults removed {st['fields_removed']} / "
+          f"unused vars/lists removed {st['vars_removed'] + st['lists_removed']} / "
+          f"custom blocks shortened {st['procs_renamed']} / "
+          f"monitors updated {st['monitors_updated']}")
     return 0
 
 
@@ -952,62 +958,62 @@ def run_gui() -> int:
             self.opt_procs = tk.BooleanVar(value=True)
             self.opt_freq = tk.BooleanVar(value=True)
             self.pct_var = tk.DoubleVar(value=0.0)
-            self.phase_var = tk.StringVar(value="待機中")
+            self.phase_var = tk.StringVar(value="Idle")
 
             outer = ttk.Frame(root, padding=10)
             outer.pack(fill="both", expand=True)
 
-            fin = ttk.LabelFrame(outer, text=" 入力 ", padding=8)
+            fin = ttk.LabelFrame(outer, text=" Input ", padding=8)
             fin.pack(fill="x")
-            ttk.Label(fin, text="ファイル:").grid(row=0, column=0, sticky="w")
+            ttk.Label(fin, text="File:").grid(row=0, column=0, sticky="w")
             self.in_entry = ttk.Entry(fin, textvariable=self.in_var)
             self.in_entry.grid(row=0, column=1, sticky="ew", padx=4)
-            ttk.Button(fin, text="参照…", command=self.browse_input).grid(row=0, column=2)
-            ttk.Label(fin, text="対応形式: .sb3 / project.json (.json)",
+            ttk.Button(fin, text="Browse...", command=self.browse_input).grid(row=0, column=2)
+            ttk.Label(fin, text="Supported: .sb3 / project.json (.json)",
                       foreground="#666").grid(row=1, column=1, sticky="w", padx=4)
             fin.columnconfigure(1, weight=1)
 
-            fout = ttk.LabelFrame(outer, text=" 出力（ダウンロード） ", padding=8)
+            fout = ttk.LabelFrame(outer, text=" Output (Download) ", padding=8)
             fout.pack(fill="x", pady=(8, 0))
-            ttk.Label(fout, text="保存先:").grid(row=0, column=0, sticky="w")
+            ttk.Label(fout, text="Save to:").grid(row=0, column=0, sticky="w")
             self.out_entry = ttk.Entry(fout, textvariable=self.out_var)
             self.out_entry.grid(row=0, column=1, sticky="ew", padx=4)
-            ttk.Button(fout, text="保存先…", command=self.browse_output).grid(row=0, column=2)
-            self.save_btn = ttk.Button(fout, text="保存（ダウンロード）",
+            ttk.Button(fout, text="Save As...", command=self.browse_output).grid(row=0, column=2)
+            self.save_btn = ttk.Button(fout, text="Save (Download)",
                                        command=self.save_result, state="disabled")
             self.save_btn.grid(row=1, column=2, sticky="e", pady=(6, 0))
             fout.columnconfigure(1, weight=1)
 
-            fopt = ttk.LabelFrame(outer, text=" オプション ", padding=8)
+            fopt = ttk.LabelFrame(outer, text=" Options ", padding=8)
             fopt.pack(fill="x", pady=(8, 0))
             ttk.Checkbutton(fopt, variable=self.opt_strip,
-                            text="デフォルト値の削除（VMが補完するフィールドを除去）"
+                            text="Strip default values (fields the VM restores)"
                             ).grid(row=0, column=0, sticky="w")
             ttk.Checkbutton(fopt, variable=self.opt_ids,
-                            text="ID短縮（ブロックID・変数/リスト/放送の名前を短く改名）"
+                            text="Shorten IDs (blocks, variables, lists, broadcasts)"
                             ).grid(row=1, column=0, sticky="w")
             ttk.Checkbutton(fopt, variable=self.opt_freq,
-                            text="頻出IDほど短いキーを割当（参照回数順に最適化）"
+                            text="Assign the shortest keys to frequent IDs"
                             ).grid(row=2, column=0, sticky="w")
             ttk.Checkbutton(fopt, variable=self.opt_unused,
-                            text="未使用の変数・リストを削除（どこからも参照されないもの）"
+                            text="Remove unused variables and lists"
                             ).grid(row=3, column=0, sticky="w")
             ttk.Checkbutton(fopt, variable=self.opt_procs,
-                            text="定義名（proccode）と引数名を短縮し全参照を置換"
+                            text="Shorten custom block proccodes and arguments"
                             ).grid(row=4, column=0, sticky="w")
             ttk.Checkbutton(fopt, variable=self.opt_click,
-                            text="スプライトクリック→ステージクリックに書き換え（非推奨：挙動が変わります）"
+                            text="Rewrite sprite clicks as stage clicks (changes behavior)"
                             ).grid(row=5, column=0, sticky="w")
 
             btns = ttk.Frame(outer)
             btns.pack(fill="x", pady=8)
-            self.start_btn = ttk.Button(btns, text="▶ 圧縮開始", command=self.start)
+            self.start_btn = ttk.Button(btns, text="▶ Start Compression", command=self.start)
             self.start_btn.pack(side="left")
-            self.cancel_btn = ttk.Button(btns, text="中止", command=self.cancel,
+            self.cancel_btn = ttk.Button(btns, text="Cancel", command=self.cancel,
                                          state="disabled")
             self.cancel_btn.pack(side="left", padx=6)
 
-            fprog = ttk.LabelFrame(outer, text=" 進捗 ", padding=8)
+            fprog = ttk.LabelFrame(outer, text=" Progress ", padding=8)
             fprog.pack(fill="x")
             self.bar = ttk.Progressbar(fprog, maximum=100.0, variable=self.pct_var)
             self.bar.pack(fill="x")
@@ -1017,17 +1023,17 @@ def run_gui() -> int:
             self.pct_lbl.pack(side="left")
             ttk.Label(prow, textvariable=self.phase_var).pack(side="left", padx=10)
 
-            flog = ttk.LabelFrame(outer, text=" ログ ", padding=8)
+            flog = ttk.LabelFrame(outer, text=" Log ", padding=8)
             flog.pack(fill="both", expand=True, pady=(8, 0))
             self.log = scrolledtext.ScrolledText(flog, height=9, state="disabled",
                                                  font=("Consolas", 9))
             self.log.pack(fill="both", expand=True)
 
-            fres = ttk.LabelFrame(outer, text=" 結果（圧縮率） ", padding=8)
+            fres = ttk.LabelFrame(outer, text=" Result (Compression) ", padding=8)
             fres.pack(fill="x", pady=(8, 0))
-            self.res_main = tk.StringVar(value="―")
+            self.res_main = tk.StringVar(value="—")
             tk.Label(fres, textvariable=self.res_main,
-                     font=("Meiryo UI", 13, "bold"), anchor="w").pack(fill="x")
+                     font=("Segoe UI", 13, "bold"), anchor="w").pack(fill="x")
             self.res_detail = tk.StringVar(value="")
             tk.Label(fres, textvariable=self.res_detail, foreground="#444",
                      anchor="w", justify="left").pack(fill="x")
@@ -1052,37 +1058,37 @@ def run_gui() -> int:
 
         def browse_input(self) -> None:
             path = filedialog.askopenfilename(
-                title="圧縮するプロジェクトを選択",
-                filetypes=[("Scratchプロジェクト", "*.sb3"), ("project.json", "*.json"),
-                           ("すべてのファイル", "*.*")])
+                title="Select a project to compress",
+                filetypes=[("Scratch projects", "*.sb3"), ("project.json", "*.json"),
+                           ("All files", "*.*")])
             if path:
                 self.in_var.set(path)
                 self.out_var.set(default_output_path(path))
                 self.payload = None
-                self.res_main.set("―")
+                self.res_main.set("—")
                 self.res_detail.set("")
                 self.pct_var.set(0)
-                self.phase_var.set("待機中")
+                self.phase_var.set("Idle")
                 self.save_btn.configure(state="disabled")
 
         def browse_output(self) -> None:
             init = self.out_var.get().strip() or default_output_path(
                 self.in_var.get() or "project.sb3")
             path = filedialog.asksaveasfilename(
-                title="保存先を選択", initialfile=os.path.basename(init),
+                title="Choose output file", initialfile=os.path.basename(init),
                 initialdir=os.path.dirname(init) or ".",
                 defaultextension=".sb3",
-                filetypes=[("Scratchプロジェクト", "*.sb3"), ("すべてのファイル", "*.*")])
+                filetypes=[("Scratch projects", "*.sb3"), ("All files", "*.*")])
             if path:
                 self.out_var.set(path)
 
         def start(self) -> None:
             in_path = self.in_var.get().strip()
             if not in_path:
-                messagebox.showwarning("SB3 Compressor", "入力ファイルを選択してください")
+                messagebox.showwarning("SB3 Compressor", "Please select an input file.")
                 return
             if not os.path.isfile(in_path):
-                messagebox.showerror("SB3 Compressor", f"ファイルが見つかりません:\n{in_path}")
+                messagebox.showerror("SB3 Compressor", f"File not found:\n{in_path}")
                 return
             opts = Options(strip_defaults=self.opt_strip.get(),
                            shorten_ids=self.opt_ids.get(),
@@ -1094,17 +1100,17 @@ def run_gui() -> int:
             self.cancel_flag.clear()
             self.set_running(True)
             self.pct_var.set(0)
-            self.res_main.set("―")
+            self.res_main.set("—")
             self.res_detail.set("")
             self.log_line("=" * 62)
-            self.log_line(f"開始: {in_path}")
+            self.log_line(f"Started: {in_path}")
             t = threading.Thread(target=self.work, args=(in_path, opts), daemon=True)
             self.worker = t
             t.start()
 
         def cancel(self) -> None:
             self.cancel_flag.set()
-            self.log_line("中止要求…")
+            self.log_line("Cancel requested...")
 
         def work(self, in_path: str, opts: Options) -> None:
             q = self.q
@@ -1137,41 +1143,42 @@ def run_gui() -> int:
                 root_, _ = os.path.splitext(init)
                 init = root_ + ".sb3"
             path = filedialog.asksaveasfilename(
-                title="保存（ダウンロード）", initialfile=os.path.basename(init),
+                title="Save (Download)", initialfile=os.path.basename(init),
                 initialdir=os.path.dirname(init) or ".",
                 defaultextension=".sb3" if is_sb3 else ".json",
-                filetypes=[("Scratchプロジェクト", "*.sb3")] if is_sb3 else [("JSON", "*.json")])
+                filetypes=[("Scratch projects", "*.sb3")] if is_sb3 else [("JSON", "*.json")])
             if not path:
                 return
             try:
                 with open(path, "wb") as f:
                     f.write(self.payload["final_bytes"])
             except OSError as e:
-                messagebox.showerror("SB3 Compressor", f"保存に失敗しました:\n{e}")
+                messagebox.showerror("SB3 Compressor", f"Failed to save:\n{e}")
                 return
             self.out_var.set(path)
             size = len(self.payload["final_bytes"])
-            self.log_line(f"保存完了: {path} ({human_size(size)})")
-            messagebox.showinfo("保存完了",
-                                f"保存しました:\n{path}\n\nサイズ: {human_size(size)}")
+            self.log_line(f"Saved: {path} ({human_size(size)})")
+            messagebox.showinfo("Saved",
+                                f"Saved:\n{path}\n\nSize: {human_size(size)}")
 
         def finish(self, payload: dict) -> None:
             self.payload = payload
             self.set_running(False)
-            self.phase_var.set("完了")
+            self.phase_var.set("Done")
             s = payload
             self.res_main.set(
                 f"project.json {human_size(s['orig_json_size'])} → "
-                f"{human_size(s['new_json_size'])}   （{s['ratio']:.1f}% 削減）")
+                f"{human_size(s['new_json_size'])}   ({s['ratio']:.1f}% smaller)")
             st = s["stats"]
             kind = ".sb3" if s["container"] == "sb3" else ".json"
             self.res_detail.set(
-                f"最終ファイル{kind}: {human_size(s['new_file_size'])}   |   "
-                f"ブロックID改名 {st['blocks_renamed']} / 変数 {st['vars_renamed']} / "
-                f"リスト {st['lists_renamed']} / 放送 {st['broadcasts_renamed']} / "
-                f"既定値削除 {st['fields_removed']} / 未使用削除 "
-                f"{st['vars_removed'] + st['lists_removed']} / 定義短縮 {st['procs_renamed']}")
-            self.log_line(f"完了: 圧縮率 {s['ratio']:.1f}% 削減 "
+                f"Final file ({kind}): {human_size(s['new_file_size'])}\n"
+                f"Blocks renamed {st['blocks_renamed']} / Variables {st['vars_renamed']} / "
+                f"Lists {st['lists_renamed']} / Broadcasts {st['broadcasts_renamed']}\n"
+                f"Defaults removed {st['fields_removed']} / Unused vars/lists removed "
+                f"{st['vars_removed'] + st['lists_removed']} / "
+                f"Custom blocks shortened {st['procs_renamed']}")
+            self.log_line(f"Done: {s['ratio']:.1f}% smaller "
                           f"({human_size(s['orig_json_size'])} → "
                           f"{human_size(s['new_json_size'])})")
             if not self.out_var.get().strip():
@@ -1180,15 +1187,15 @@ def run_gui() -> int:
 
         def fail(self, err, tb) -> None:
             self.set_running(False)
-            self.phase_var.set("失敗")
+            self.phase_var.set("Failed")
             if tb:
                 self.log_line(tb.rstrip())
-                messagebox.showerror("SB3 Compressor", f"予期しないエラーが発生しました:\n{tb.splitlines()[-1]}")
+                messagebox.showerror("SB3 Compressor", f"Unexpected error:\n{tb.splitlines()[-1]}")
             elif err is not None:
-                self.log_line(f"エラー: {err}")
+                self.log_line(f"Error: {err}")
                 messagebox.showerror("SB3 Compressor", str(err))
             else:
-                self.log_line("中止しました")
+                self.log_line("Cancelled.")
             self.cancel_flag.clear()
 
         def poll(self) -> None:
@@ -1211,7 +1218,7 @@ def run_gui() -> int:
 
         def on_close(self) -> None:
             if self.worker and self.worker.is_alive():
-                if not messagebox.askokcancel("終了", "圧縮中ですが終了しますか？"):
+                if not messagebox.askokcancel("Exit", "Compression is still running. Exit anyway?"):
                     return
                 self.cancel_flag.set()
             self.root.destroy()
