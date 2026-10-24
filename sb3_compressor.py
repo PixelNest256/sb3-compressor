@@ -332,7 +332,9 @@ class Options:
                  inline_single_call: bool = True,
                  fold_constants: bool = True,
                  loop_duplicates: bool = True,
-                 propagate_constants: bool = True):
+                 propagate_constants: bool = True,
+                 strip_comments: bool = False,
+                 compact_workspace: bool = False):
         self.strip_defaults = strip_defaults
         self.shorten_ids = shorten_ids
         self.click_to_stage = click_to_stage
@@ -350,6 +352,8 @@ class Options:
         self.fold_constants = fold_constants
         self.loop_duplicates = loop_duplicates
         self.propagate_constants = propagate_constants
+        self.strip_comments = strip_comments
+        self.compact_workspace = compact_workspace
 
 
 def default_output_path(in_path: str) -> str:
@@ -402,6 +406,12 @@ class Compressor:
             "loop_blocks_saved": 0,
             "const_vars_inlined": 0,
             "const_reads_inlined": 0,
+            "arg_ids_shortened": 0,
+            "mutation_keys_removed": 0,
+            "monitors_removed": 0,
+            "comments_removed": 0,
+            "workspace_compacted": 0,
+            "float_values_rounded": 0,
         }
         self.var_map: dict = {}
         self.list_map: dict = {}
@@ -1389,6 +1399,12 @@ class Compressor:
                     if key in cos and loose_eq(cos[key], 0):
                         del cos[key]
                         st["fields_removed"] += 1
+                    v = cos.get(key)
+                    if isinstance(v, float) and not v.is_integer():
+                        r = round(v, 4)
+                        if r != v:
+                            cos[key] = r
+                            st["float_values_rounded"] += 1
 
         blocks = tgt.get("blocks")
         id_map = {}
@@ -1398,8 +1414,12 @@ class Compressor:
             self._extract_near_duplicates(blocks)
         if isinstance(blocks, dict) and blocks:
             self._normalize_parent_markers(blocks)
+            if o.strip_defaults:
+                self._strip_legacy_mutation_keys(blocks)
         if o.compress_procs and isinstance(blocks, dict) and blocks:
             self._compress_procs(blocks)
+        if o.shorten_ids and isinstance(blocks, dict) and blocks:
+            self._shorten_argument_ids(blocks)
         if isinstance(blocks, dict) and o.shorten_ids and blocks:
             tgt["blocks"], id_map = self._rename_blocks(blocks)
             # 注: "blocks" は sb3 スキーマで必須のため、空でも削除しない
@@ -1426,6 +1446,11 @@ class Compressor:
                 elif anchor in final_blocks:
                     out[cid] = c
             tgt["comments"] = out
+
+        if o.strip_comments:
+            self._strip_comments(tgt)
+        if o.compact_workspace:
+            self._compact_workspace(tgt)
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -3747,6 +3772,188 @@ class Compressor:
                 if isinstance(nxt, str) and nxt:
                     stack.append(nxt)
 
+    def _strip_legacy_mutation_keys(self, blocks: dict) -> None:
+        """Drop mutation keys that the VM never reads.
+
+        Scratch 2 conversions leave ``tagName``/``children`` on procedure
+        mutations.  ``children`` can carry old XML argument defaults, so it is
+        only dropped when it is empty.
+        """
+        st = self.stats
+        for blk in blocks.values():
+            if not isinstance(blk, dict):
+                continue
+            mut = blk.get("mutation")
+            if not isinstance(mut, dict):
+                continue
+            if mut.get("children") == []:
+                del mut["children"]
+                st["mutation_keys_removed"] += 1
+                if "tagName" in mut:
+                    del mut["tagName"]
+                    st["mutation_keys_removed"] += 1
+
+    def _shorten_argument_ids(self, blocks: dict) -> None:
+        """Rename custom-block argument IDs to short generated IDs.
+
+        Argument IDs appear in every ``procedures_call``/``procedures_prototype``
+        mutation and as the input keys of those blocks, so a long ID is
+        duplicated many times.  They live in their own namespace, so one
+        project-wide map keeps every reference consistent.
+        """
+        st = self.stats
+        old_ids: dict = {}
+        for blk in blocks.values():
+            if not isinstance(blk, dict):
+                continue
+            if blk.get("opcode") not in ("procedures_call",
+                                         "procedures_prototype"):
+                continue
+            mut = blk.get("mutation")
+            if not isinstance(mut, dict):
+                continue
+            raw = mut.get("argumentids")
+            try:
+                ids = json.loads(raw) if isinstance(raw, str) else None
+            except json.JSONDecodeError:
+                ids = None
+            if isinstance(ids, list):
+                for a in ids:
+                    if isinstance(a, str) and a and a not in old_ids:
+                        old_ids[a] = None
+        if not old_ids:
+            return
+
+        reserved = set()
+        for blk in blocks.values():
+            if not isinstance(blk, dict):
+                continue
+            inputs = blk.get("inputs")
+            if isinstance(inputs, dict):
+                reserved.update(k for k in inputs if k not in old_ids)
+        new_map: dict = {}
+        n = 0
+        for old in old_ids:
+            while True:
+                n += 1
+                cand = encode_id(n)
+                if cand not in reserved:
+                    break
+            reserved.add(cand)
+            new_map[old] = cand
+        st["arg_ids_shortened"] += len(new_map)
+
+        for blk in blocks.values():
+            if not isinstance(blk, dict):
+                continue
+            mut = blk.get("mutation")
+            if isinstance(mut, dict) and isinstance(mut.get("argumentids"), str):
+                try:
+                    ids = json.loads(mut["argumentids"])
+                except json.JSONDecodeError:
+                    ids = None
+                if isinstance(ids, list):
+                    mut["argumentids"] = json.dumps(
+                        [new_map.get(a, a) if isinstance(a, str) else a
+                         for a in ids],
+                        ensure_ascii=False, separators=(",", ":"))
+            inputs = blk.get("inputs")
+            if isinstance(inputs, dict):
+                blk["inputs"] = {new_map.get(k, k): v
+                                 for k, v in inputs.items()}
+            fields = blk.get("fields")
+            if isinstance(fields, dict):
+                fv = fields.get("VALUE")
+                if isinstance(fv, list) and fv and fv[0] in new_map:
+                    fv[0] = new_map[fv[0]]
+
+    def _strip_comments(self, tgt: dict) -> None:
+        """Remove every workspace comment (opt-in; comments never execute)."""
+        st = self.stats
+        comments = tgt.get("comments")
+        if isinstance(comments, dict):
+            st["comments_removed"] += len(comments)
+            tgt.pop("comments", None)
+        blocks = tgt.get("blocks")
+        if isinstance(blocks, dict):
+            for blk in blocks.values():
+                if isinstance(blk, dict) and "comment" in blk:
+                    del blk["comment"]
+
+    def _script_size(self, blocks: dict, start) -> int:
+        """Number of blocks in one script, used to space a compact layout."""
+        total = 0
+        stack = [start]
+        seen = set()
+        while stack:
+            bid = stack.pop()
+            if bid in seen:
+                continue
+            seen.add(bid)
+            blk = blocks.get(bid)
+            if not isinstance(blk, dict):
+                continue
+            total += 1
+            nxt = blk.get("next")
+            if isinstance(nxt, str) and nxt:
+                stack.append(nxt)
+            inputs = blk.get("inputs")
+            if isinstance(inputs, dict):
+                for key in ("SUBSTACK", "SUBSTACK2"):
+                    value = inputs.get(key)
+                    if isinstance(value, list):
+                        for item in value[1:]:
+                            if isinstance(item, str):
+                                stack.append(item)
+        return total
+
+    def _compact_workspace(self, tgt: dict) -> None:
+        """Re-flow top-level blocks onto a small grid (editor layout only).
+
+        Columns and the top-to-bottom order inside a column are preserved, so
+        the workspace keeps its reading order while the coordinates become
+        short numbers.
+        """
+        st = self.stats
+        blocks = tgt.get("blocks")
+        if not isinstance(blocks, dict) or not blocks:
+            return
+        roots = [bid for bid, b in blocks.items()
+                 if isinstance(b, dict) and b.get("topLevel") is True]
+        if not roots:
+            return
+        columns: dict = {}
+        for bid in roots:
+            x = blocks[bid].get("x")
+            columns.setdefault(x if isinstance(x, (int, float)) else 0,
+                               []).append(bid)
+        for ci, old_x in enumerate(sorted(columns)):
+            new_x = 40 + ci * 340
+            y = 40
+            ordered = sorted(
+                columns[old_x],
+                key=lambda b: (
+                    blocks[b].get("y")
+                    if isinstance(blocks[b].get("y"), (int, float)) else 0,
+                    b))
+            for bid in ordered:
+                blk = blocks[bid]
+                if blk.get("x") != new_x or blk.get("y") != y:
+                    blk["x"] = new_x
+                    blk["y"] = y
+                    st["workspace_compacted"] += 1
+                y += 60 + 52 * self._script_size(blocks, bid)
+        comments = tgt.get("comments")
+        if isinstance(comments, dict):
+            for c in comments.values():
+                if not isinstance(c, dict):
+                    continue
+                anchor = c.get("blockId")
+                blk = blocks.get(anchor) if isinstance(anchor, str) else None
+                if isinstance(blk, dict) and "x" in blk:
+                    c["x"] = blk.get("x", 0) + 200
+                    c["y"] = blk.get("y", 0)
+
     def _normalize_parent_markers(self, blocks: dict) -> None:
         """Keep ``topLevel``/workspace coordinates only on real root blocks.
 
@@ -4032,6 +4239,10 @@ class Compressor:
         if not isinstance(mons, list):
             return
         st = self.stats
+        # Monitors that are hidden from the start can only become visible again
+        # through a "show variable"/"show list" block.  If no such block refers
+        # to the store, the entry can never be displayed, so drop it.
+        referenced = set(self._show_var_ids) | set(self._show_list_ids)
         kept_mons = []
         for mon in mons:
             if not isinstance(mon, dict):
@@ -4054,6 +4265,15 @@ class Compressor:
                 if (not isinstance(mid, str) or mid not in table) and pname is not None:
                     ids = byname.get(pname, set())
                     if ids and ids <= dropped:
+                        continue
+                if self.options.remove_unused and mon.get("visible") is False:
+                    ids = set()
+                    if isinstance(mid, str):
+                        ids.add(mid)
+                    if pname is not None:
+                        ids |= byname.get(pname, set())
+                    if not (ids & referenced):
+                        st["monitors_removed"] += 1
                         continue
             if self.options.shorten_ids and op in ("data_variable", "data_listcontents"):
                 table = self.var_map if op == "data_variable" else self.list_map
@@ -4267,6 +4487,12 @@ def run_cli(argv) -> int:
     print(f"         no-op defs {st['noop_procs_removed']} / no-op messages "
           f"{st['noop_broadcasts_removed']} / if-else simplified "
           f"{st['ifelse_converted']}")
+    print(f"         argument IDs shortened {st['arg_ids_shortened']} / "
+          f"mutation keys removed {st['mutation_keys_removed']} / "
+          f"monitors removed {st['monitors_removed']} / "
+          f"comments removed {st['comments_removed']}")
+    print(f"         workspace re-flowed {st['workspace_compacted']} / "
+          f"rounded values {st['float_values_rounded']}")
     return 0
 
 
@@ -4284,7 +4510,7 @@ def run_gui() -> int:
         def __init__(self, root: tk.Tk):
             self.root = root
             root.title("SB3 Compressor")
-            root.geometry("760x780")
+            root.geometry("760x820")
             root.minsize(640, 620)
 
             self.q: queue.Queue = queue.Queue()
@@ -4304,6 +4530,8 @@ def run_gui() -> int:
             self.opt_init = tk.BooleanVar(value=True)
             self.opt_dup = tk.BooleanVar(value=True)
             self.opt_neardup = tk.BooleanVar(value=True)
+            self.opt_comments = tk.BooleanVar(value=False)
+            self.opt_workspace = tk.BooleanVar(value=False)
             self.pct_var = tk.DoubleVar(value=0.0)
             self.phase_var = tk.StringVar(value="Idle")
 
@@ -4366,6 +4594,12 @@ def run_gui() -> int:
             ttk.Checkbutton(fopt, variable=self.opt_neardup,
                             text="Share near-duplicates by passing differing literals as arguments"
                             ).grid(row=10, column=0, sticky="w")
+            ttk.Checkbutton(fopt, variable=self.opt_comments,
+                            text="Remove all workspace comments (their text is lost)"
+                            ).grid(row=11, column=0, sticky="w")
+            ttk.Checkbutton(fopt, variable=self.opt_workspace,
+                            text="Re-flow the workspace layout onto a compact grid"
+                            ).grid(row=12, column=0, sticky="w")
 
             btns = ttk.Frame(outer)
             btns.pack(fill="x", pady=8)
@@ -4462,7 +4696,9 @@ def run_gui() -> int:
                            remove_unreachable=self.opt_unreachable.get(),
                            clear_initial_values=self.opt_init.get(),
                            extract_duplicates=self.opt_dup.get(),
-                           near_duplicates=self.opt_neardup.get())
+                           near_duplicates=self.opt_neardup.get(),
+                           strip_comments=self.opt_comments.get(),
+                           compact_workspace=self.opt_workspace.get())
             self.payload = None
             self.cancel_flag.clear()
             self.set_running(True)

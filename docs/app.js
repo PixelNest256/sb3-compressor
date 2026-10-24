@@ -51,7 +51,13 @@
         loops_created: "repeat loops created",
         loop_blocks_saved: "blocks saved by loops",
         const_vars_inlined: "constant variables inlined",
-        const_reads_inlined: "constant reads replaced"
+        const_reads_inlined: "constant reads replaced",
+        arg_ids_shortened: "argument IDs shortened",
+        mutation_keys_removed: "legacy mutation keys removed",
+        monitors_removed: "hidden monitors removed",
+        comments_removed: "comments removed",
+        workspace_compacted: "workspace blocks re-flowed",
+        float_values_rounded: "long decimals rounded"
       },
       ready: "Ready",
       settingsChanged: "Settings changed",
@@ -143,7 +149,13 @@
         loops_created: "repeat ループを作成",
         loop_blocks_saved: "ループで削減したブロック",
         const_vars_inlined: "定数変数を値に置換",
-        const_reads_inlined: "定数の参照を置換"
+        const_reads_inlined: "定数の参照を置換",
+        arg_ids_shortened: "引数 ID を短縮",
+        mutation_keys_removed: "旧形式の mutation キーを削除",
+        monitors_removed: "非表示モニターを削除",
+        comments_removed: "コメントを削除",
+        workspace_compacted: "ブロックの配置を再構成",
+        float_values_rounded: "長い小数を丸め"
       },
       ready: "準備完了",
       settingsChanged: "設定を変更しました",
@@ -220,7 +232,9 @@
     inlineSingleCall: true,
     foldConstants: true,
     loopDuplicates: true,
-    propagateConstants: true
+    propagateConstants: true,
+    stripComments: false,
+    compactWorkspace: false
   };
 
   var PHASE_LABELS = L.phases;
@@ -237,7 +251,9 @@
   var KEY_STATS = [
     "blocks_renamed",
     "fields_removed",
+    "arg_ids_shortened",
     "unreachable_blocks_removed",
+    "monitors_removed",
     "duplicates_extracted",
     "near_duplicates_extracted",
     "loops_created",

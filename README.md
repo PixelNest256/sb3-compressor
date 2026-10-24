@@ -45,6 +45,15 @@ changing how the project behaves:
 - **Constant propagation** — reads of variables that are never written, or
   whose every write stores the same literal, are replaced by that value when
   the serialized JSON becomes smaller.
+- **Argument ID shortening** — custom-block argument IDs are renamed to short
+  generated IDs. Calls and prototypes repeat those IDs in their `mutation` and
+  as input keys, so this is one of the larger savings.
+- **Mutation cleanup** — legacy `tagName`/`children` keys left over from
+  Scratch 2 conversions are dropped when `children` is empty.
+- **Hidden monitor pruning** — a monitor that is hidden and that no
+  `show variable`/`show list` block can reveal is removed.
+- **Decimal rounding** — costume rotation centers with long fractional digits
+  are rounded to four decimals (a sub-pixel change in metadata only).
 - **`if-else` simplification** — an `if-else` block with no else branch is
   converted to the smaller `if` block.
 - **Default stripping** — fields that the Scratch VM reconstructs
@@ -52,6 +61,14 @@ changing how the project behaves:
   empty `inputs`/`fields`) are removed.
 - **Minification** — the JSON is re-serialized with no extra whitespace,
   then repacked with all assets into a new `.sb3`.
+
+Two optional passes go beyond behavior preservation and are off by default:
+
+- **Comment removal** (`strip_comments`) — deletes every workspace comment.
+  Comments never execute, but their text is lost.
+- **Workspace re-flow** (`compact_workspace`) — re-lays out top-level scripts
+  onto a compact grid. Columns and the top-to-bottom order are preserved; only
+  the editor layout changes.
 
 Typical savings depend on the project, but JSON-heavy projects often shrink
 substantially with zero visual or behavioral difference in the editor.
@@ -190,6 +207,8 @@ All options are on by default except `click_to_stage`.
 | `loop_duplicates` | on | Replace adjacent identical groups with `repeat` loops. |
 | `propagate_constants` | on | Replace reads of constant stores with their value. |
 | `click_to_stage` | off | Rewrite sprite-click hats into stage-click hats. **Changes behavior.** |
+| `strip_comments` | off | Delete every workspace comment. **Their text is lost.** |
+| `compact_workspace` | off | Re-flow top-level scripts onto a compact grid. |
 
 ## How it works
 

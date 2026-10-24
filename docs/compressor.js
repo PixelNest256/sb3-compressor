@@ -215,7 +215,9 @@
     inlineSingleCall: true,
     foldConstants: true,
     loopDuplicates: true,
-    propagateConstants: true
+    propagateConstants: true,
+    stripComments: false,
+    compactWorkspace: false
   };
 
   class Options {
@@ -248,7 +250,9 @@
         noop_receivers_removed: 0, noop_broadcasts_removed: 0,
         noop_messages_removed: 0, procs_inlined: 0, const_values_folded: 0,
         loops_created: 0, loop_blocks_saved: 0,
-        const_vars_inlined: 0, const_reads_inlined: 0
+        const_vars_inlined: 0, const_reads_inlined: 0,
+        arg_ids_shortened: 0, mutation_keys_removed: 0, monitors_removed: 0,
+        comments_removed: 0, workspace_compacted: 0, float_values_rounded: 0
       };
       this.varMap = new Map();
       this.listMap = new Map();
@@ -1139,6 +1143,14 @@
               delete cos[key];
               st.fields_removed += 1;
             }
+            const v = cos[key];
+            if (typeof v === "number" && Number.isFinite(v) && !Number.isInteger(v)) {
+              const r = Number(v.toFixed(4));
+              if (r !== v) {
+                cos[key] = r;
+                st.float_values_rounded += 1;
+              }
+            }
           }
         }
       }
@@ -1151,9 +1163,15 @@
       if (isDict(blocks) && Object.keys(blocks).length && o.nearDuplicates) {
         this._extractNearDuplicates(blocks);
       }
-      if (isDict(blocks) && Object.keys(blocks).length) this._normalizeParentMarkers(blocks);
+      if (isDict(blocks) && Object.keys(blocks).length) {
+        this._normalizeParentMarkers(blocks);
+        if (o.stripDefaults) this._stripLegacyMutationKeys(blocks);
+      }
       if (o.compressProcs && isDict(blocks) && Object.keys(blocks).length) {
         this._compressProcs(blocks);
+      }
+      if (o.shortenIds && isDict(blocks) && Object.keys(blocks).length) {
+        this._shortenArgumentIds(blocks);
       }
       if (isDict(blocks) && o.shortenIds && Object.keys(blocks).length) {
         const pair = this._renameBlocks(blocks);
@@ -1183,6 +1201,9 @@
         }
         tgt.comments = out;
       }
+
+      if (o.stripComments) this._stripComments(tgt);
+      if (o.compactWorkspace) this._compactWorkspace(tgt);
     }
 
     static _isHatOpcode(op) {
@@ -3159,6 +3180,177 @@
       }
     }
 
+    _stripLegacyMutationKeys(blocks) {
+      const st = this.stats;
+      for (const blk of Object.values(blocks)) {
+        if (!isDict(blk) || !isDict(blk.mutation)) continue;
+        const mut = blk.mutation;
+        const children = mut.children;
+        if (isArr(children) && children.length === 0) {
+          delete mut.children;
+          st.mutation_keys_removed += 1;
+          if (has(mut, "tagName")) {
+            delete mut.tagName;
+            st.mutation_keys_removed += 1;
+          }
+        }
+      }
+    }
+
+    _shortenArgumentIds(blocks) {
+      const st = this.stats;
+      const oldIds = new Map();
+      for (const blk of Object.values(blocks)) {
+        if (!isDict(blk)) continue;
+        if (blk.opcode !== "procedures_call" && blk.opcode !== "procedures_prototype") continue;
+        if (!isDict(blk.mutation)) continue;
+        const raw = blk.mutation.argumentids;
+        if (!isStr(raw)) continue;
+        let ids = null;
+        try {
+          ids = JSON.parse(raw);
+        } catch (_) {
+          ids = null;
+        }
+        if (!isArr(ids)) continue;
+        for (const a of ids) {
+          if (isStr(a) && a && !oldIds.has(a)) oldIds.set(a, true);
+        }
+      }
+      if (!oldIds.size) return;
+
+      const reserved = new Set();
+      for (const blk of Object.values(blocks)) {
+        if (!isDict(blk) || !isDict(blk.inputs)) continue;
+        for (const k of Object.keys(blk.inputs)) {
+          if (!oldIds.has(k)) reserved.add(k);
+        }
+      }
+      const newMap = new Map();
+      let n = 0;
+      for (const old of oldIds.keys()) {
+        let cand;
+        do {
+          n += 1;
+          cand = encodeId(n);
+        } while (reserved.has(cand));
+        reserved.add(cand);
+        newMap.set(old, cand);
+      }
+      st.arg_ids_shortened += newMap.size;
+
+      for (const blk of Object.values(blocks)) {
+        if (!isDict(blk)) continue;
+        if (isDict(blk.mutation) && isStr(blk.mutation.argumentids)) {
+          let ids = null;
+          try {
+            ids = JSON.parse(blk.mutation.argumentids);
+          } catch (_) {
+            ids = null;
+          }
+          if (isArr(ids)) {
+            blk.mutation.argumentids = JSON.stringify(
+              ids.map((a) => (isStr(a) && newMap.has(a)) ? newMap.get(a) : a));
+          }
+        }
+        if (isDict(blk.inputs)) {
+          const renamed = {};
+          for (const [k, v] of Object.entries(blk.inputs)) {
+            renamed[newMap.has(k) ? newMap.get(k) : k] = v;
+          }
+          blk.inputs = renamed;
+        }
+        if (isDict(blk.fields)) {
+          const fv = blk.fields.VALUE;
+          if (isArr(fv) && fv.length && newMap.has(fv[0])) fv[0] = newMap.get(fv[0]);
+        }
+      }
+    }
+
+    _stripComments(tgt) {
+      const st = this.stats;
+      if (isDict(tgt.comments)) {
+        st.comments_removed += Object.keys(tgt.comments).length;
+        delete tgt.comments;
+      }
+      if (isDict(tgt.blocks)) {
+        for (const blk of Object.values(tgt.blocks)) {
+          if (isDict(blk) && has(blk, "comment")) delete blk.comment;
+        }
+      }
+    }
+
+    _scriptSize(blocks, start) {
+      let total = 0;
+      const seen = new Set();
+      const stack = [start];
+      while (stack.length) {
+        const bid = stack.pop();
+        if (seen.has(bid)) continue;
+        seen.add(bid);
+        const blk = blocks[bid];
+        if (!isDict(blk)) continue;
+        total += 1;
+        if (isStr(blk.next) && blk.next) stack.push(blk.next);
+        if (isDict(blk.inputs)) {
+          for (const key of ["SUBSTACK", "SUBSTACK2"]) {
+            const value = blk.inputs[key];
+            if (!isArr(value)) continue;
+            for (let i = 1; i < value.length; i++) {
+              if (isStr(value[i])) stack.push(value[i]);
+            }
+          }
+        }
+      }
+      return total;
+    }
+
+    _compactWorkspace(tgt) {
+      const st = this.stats;
+      const blocks = tgt.blocks;
+      if (!isDict(blocks) || !Object.keys(blocks).length) return;
+      const roots = Object.keys(blocks).filter(
+        (bid) => isDict(blocks[bid]) && blocks[bid].topLevel === true);
+      if (!roots.length) return;
+      const columns = new Map();
+      for (const bid of roots) {
+        const x = blocks[bid].x;
+        const key = (typeof x === "number" && Number.isFinite(x)) ? x : 0;
+        if (!columns.has(key)) columns.set(key, []);
+        columns.get(key).push(bid);
+      }
+      const xs = [...columns.keys()].sort((a, b) => a - b);
+      xs.forEach((oldX, ci) => {
+        const newX = 40 + ci * 340;
+        let y = 40;
+        const ordered = columns.get(oldX).slice().sort((a, b) => {
+          const ya = (typeof blocks[a].y === "number") ? blocks[a].y : 0;
+          const yb = (typeof blocks[b].y === "number") ? blocks[b].y : 0;
+          if (ya !== yb) return ya - yb;
+          return a < b ? -1 : (a > b ? 1 : 0);
+        });
+        for (const bid of ordered) {
+          const blk = blocks[bid];
+          if (blk.x !== newX || blk.y !== y) {
+            blk.x = newX;
+            blk.y = y;
+            st.workspace_compacted += 1;
+          }
+          y += 60 + 52 * this._scriptSize(blocks, bid);
+        }
+      });
+      if (isDict(tgt.comments)) {
+        for (const c of Object.values(tgt.comments)) {
+          if (!isDict(c) || !isStr(c.blockId)) continue;
+          const blk = blocks[c.blockId];
+          if (isDict(blk) && has(blk, "x")) {
+            c.x = blk.x + 200;
+            c.y = blk.y;
+          }
+        }
+      }
+    }
+
     _normalizeParentMarkers(blocks) {
       for (const blk of Object.values(blocks)) {
         if (!isDict(blk) || blk.parent === null || blk.parent === undefined) continue;
@@ -3414,6 +3606,7 @@
       const mons = project.monitors;
       if (!isArr(mons)) return;
       const st = this.stats;
+      const referenced = new Set([...this.showVarIds, ...this.showListIds]);
       const keptMons = [];
       for (const mon of mons) {
         if (!isDict(mon)) { keptMons.push(mon); continue; }
@@ -3433,6 +3626,18 @@
           if (!(isStr(mid) && table.has(mid)) && pname !== null && pname !== undefined) {
             const ids = byname.get(pname);
             if (ids && ids.size && [...ids].every((id) => dropped.has(id))) continue;
+          }
+          if (this.options.removeUnused && mon.visible === false) {
+            const ids = new Set();
+            if (isStr(mid)) ids.add(mid);
+            const byName = (pname !== null && pname !== undefined) ? byname.get(pname) : null;
+            if (byName) for (const id of byName) ids.add(id);
+            let hits = false;
+            for (const id of ids) if (referenced.has(id)) { hits = true; break; }
+            if (!hits) {
+              st.monitors_removed += 1;
+              continue;
+            }
           }
         }
         if (this.options.shortenIds && (op === "data_variable" || op === "data_listcontents")) {

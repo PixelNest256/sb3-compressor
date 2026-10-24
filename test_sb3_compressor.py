@@ -1441,7 +1441,13 @@ def main():
     assert cm["proccode"] == pm["proccode"], "呼び出し側のproccodeが追従していない"
     anames = json.loads(pm["argumentnames"])
     assert anames == ["a0"], f"引数名が短縮されていない: {anames}"
-    assert json.loads(pm["argumentids"]) == ["ARG1"], "argumentids が変更されている"
+    aid = json.loads(pm["argumentids"])
+    assert len(aid) == 1 and aid[0] != "ARG1" and len(aid[0]) <= 2, \
+        f"argumentids が短縮されていない: {aid}"
+    assert set((proto8.get("inputs") or {})) == {aid[0]}, \
+        f"prototype の入力キーが argumentids に追従していない: {proto8.get('inputs')}"
+    assert set((call8.get("inputs") or {})) == {aid[0]}, \
+        f"呼び出し側の入力キーが argumentids に追従していない: {call8.get('inputs')}"
     rep = next(b for b in sb8.values()
                if isinstance(b, dict) and b.get("opcode") == "argument_reporter_string_number"
                and b.get("topLevel") is not True and b.get("parent"))
@@ -1953,6 +1959,160 @@ def main():
                   f"({rp['ratio']:.1f}% 削減, 最終.sb3 "
                   f"{rp['new_file_size']:,}B)")
             print("     内訳:", rp["stats"])
+
+    # ---------- 10) 追加パス: 引数ID短縮 / mutation整備 / モニター整理 / コメント / 座標 / 小数丸め ----------
+    def blk2(opcode, **kw):
+        b = {"opcode": opcode, "next": None, "parent": None, "inputs": {},
+             "fields": {}, "shadow": False, "topLevel": False}
+        b.update(kw)
+        return b
+
+    V_ID10 = "vId00000000000000001"
+    W_ID10 = "wId00000000000000001"
+    ARG_LONG = "aLONGARGUMENTID00000001"
+    blocks10 = {
+        "hatA": blk2("procedures_definition", topLevel=True, x=12587, y=1043,
+                     next="bodyA", inputs={"custom_block": [1, "protoA"]}),
+        "protoA": blk2("procedures_prototype", shadow=True, parent="hatA",
+                       inputs={ARG_LONG: [1, [10, "x"]]},
+                       mutation={"tagName": "mutation", "children": [],
+                                 "proccode": "do %s", "argumentids": json.dumps([ARG_LONG]),
+                                 "argumentnames": json.dumps(["x"]),
+                                 "argumentdefaults": json.dumps([""]),
+                                 "warp": "false"}),
+        "bodyA": blk2("data_setvariableto", parent="hatA", next="stopC",
+                      comment="c1",
+                      inputs={"VALUE": [3, "argRep", [10, ""]]},
+                      fields={"VARIABLE": ["v", V_ID10]}),
+        "argRep": blk2("argument_reporter_string_number", parent="bodyA",
+                       fields={"VALUE": ["x", None]}),
+        "callA": blk2("procedures_call", parent="flag",
+                      mutation={"tagName": "mutation", "children": [],
+                                "proccode": "do %s",
+                                "argumentids": json.dumps([ARG_LONG]),
+                                "warp": "false"},
+                      inputs={ARG_LONG: [1, [10, "5"]]}),
+        "flag": blk2("event_whenflagclicked", topLevel=True, x=12587, y=9000,
+                     next="callA"),
+        "stopC": blk2("control_stop", parent="bodyA", next="showV",
+                      fields={"STOP_OPTION": ["all", None]},
+                      mutation={"tagName": "mutation", "children": [["legacy"]],
+                                "hasnext": "false"}),
+        "showV": blk2("data_showvariable", parent="stopC", next="chgW",
+                      fields={"VARIABLE": ["v", V_ID10]}),
+        "chgW": blk2("data_changevariableby", parent="showV", next="stopB",
+                     inputs={"VALUE": [1, [4, "1"]]},
+                     fields={"VARIABLE": ["w", W_ID10]}),
+        "stopB": blk2("control_stop", parent="chgW",
+                      fields={"STOP_OPTION": ["this script", None]},
+                      mutation={"tagName": "mutation", "children": [["legacy"]],
+                                "hasnext": "false"}),
+    }
+    mons10 = [
+        {"id": V_ID10, "mode": "default", "opcode": "data_variable",
+         "params": {"VARIABLE": "v"}, "spriteName": "Sprite1", "value": 0,
+         "width": 0, "height": 0, "x": 5, "y": 5, "visible": False,
+         "sliderMin": 0, "sliderMax": 100, "isDiscrete": True},
+        {"id": W_ID10, "mode": "default", "opcode": "data_variable",
+         "params": {"VARIABLE": "w"}, "spriteName": "Sprite1", "value": 0,
+         "width": 0, "height": 0, "x": 5, "y": 40, "visible": False,
+         "sliderMin": 0, "sliderMax": 100, "isDiscrete": True},
+    ]
+    costume10 = {"name": "c", "dataFormat": "svg", "assetId": "0" * 32,
+                 "rotationCenterX": 96.99250489598867,
+                 "rotationCenterY": 61.39895949833303, "bitmapResolution": 2}
+    p10 = {"targets": [{
+        "isStage": False, "name": "Sprite1",
+        "variables": {V_ID10: ["v", 0], W_ID10: ["w", 0]},
+        "lists": {}, "broadcasts": {}, "blocks": blocks10,
+        "comments": {"c1": {"blockId": "bodyA", "x": 12587, "y": 1043,
+                            "width": 200, "height": 100, "text": "note"}},
+        "currentCostume": 0, "costumes": [costume10], "sounds": [],
+        "volume": 100, "layerOrder": 0, "visible": True, "x": 0, "y": 0,
+        "size": 100, "direction": 90, "draggable": False,
+        "rotationStyle": "all around",
+    }], "monitors": json.loads(json.dumps(mons10)), "extensions": [],
+        "meta": {"semver": "3.0.0"}}
+
+    base10 = json.dumps(p10)
+    c10 = Compressor(Options())
+    q10 = c10.run(json.loads(base10))
+    sb10 = q10["targets"][0]["blocks"]
+    st10 = c10.stats
+    proto10 = next(b for b in sb10.values() if b["opcode"] == "procedures_prototype")
+    call10 = next(b for b in sb10.values()
+                  if isinstance(b, dict) and b.get("opcode") == "procedures_call"
+                  and "argumentids" in (b.get("mutation") or {}))
+    aid10 = json.loads(proto10["mutation"]["argumentids"])
+    assert len(aid10) == 1 and aid10[0] != ARG_LONG and len(aid10[0]) <= 2, \
+        f"引数IDが短縮されていない: {aid10}"
+    assert set(proto10["inputs"]) == {aid10[0]}, proto10["inputs"]
+    assert set(call10["inputs"]) == {aid10[0]}, call10["inputs"]
+    assert json.loads(call10["mutation"]["argumentids"]) == aid10, \
+        "呼び出し側の argumentids が追従していない"
+    rep10 = next(b for b in sb10.values()
+                 if b.get("opcode") == "argument_reporter_string_number")
+    assert rep10["fields"]["VALUE"][0] == "a0", rep10["fields"]["VALUE"]
+    assert st10["arg_ids_shortened"] == 1, st10["arg_ids_shortened"]
+    # 空 children の mutation は tagName/children を落とし、非空 children は残す
+    assert "tagName" not in proto10["mutation"] and "children" not in proto10["mutation"]
+    assert "tagName" not in call10["mutation"]
+    stops10 = [b for b in sb10.values() if isinstance(b, dict)
+               and b.get("opcode") == "control_stop"]
+    assert stops10, "control_stop が削除された"
+    assert all(b["mutation"].get("children") == [["legacy"]] for b in stops10), \
+        f"children 非空の mutation を壊した: {[b['mutation'] for b in stops10]}"
+    assert st10["mutation_keys_removed"] == 4, st10["mutation_keys_removed"]
+    # 小数の丸め (bitmapResolution は保持)
+    cos10 = q10["targets"][0]["costumes"][0]
+    assert cos10["rotationCenterX"] == 96.9925, cos10["rotationCenterX"]
+    assert cos10["rotationCenterY"] == 61.399, cos10["rotationCenterY"]
+    assert cos10["bitmapResolution"] == 2
+    assert st10["float_values_rounded"] == 2, st10["float_values_rounded"]
+    # 既定ではコメント/座標は触らない
+    assert st10["comments_removed"] == 0 and "comments" in q10["targets"][0]
+    assert st10["workspace_compacted"] == 0
+    roots10 = [b for b in sb10.values()
+               if isinstance(b, dict) and b.get("topLevel") is True]
+    assert all(b.get("x") == 12587 for b in roots10), [b.get("x") for b in roots10]
+    # 非表示モニター: show ブロックがある v は残し、無い w は削除
+    assert st10["monitors_removed"] == 1, st10["monitors_removed"]
+    mons10_out = q10.get("monitors") or []
+    assert len(mons10_out) == 1, mons10_out
+    assert mons10_out[0]["params"]["VARIABLE"] == c10.var_map[V_ID10][1], mons10_out[0]
+    assert c10.var_map[W_ID10][0] in q10["targets"][0]["variables"], \
+        "書き込みのある変数 w が削除された"
+    assert not validate_project(q10), validate_project(q10)
+    print("[OK] 引数ID短縮 / mutation整備 / 非表示モニター整理 / 小数丸め")
+
+    # shorten_ids=False のときは引数IDも触らない
+    c10b = Compressor(Options(shorten_ids=False))
+    q10b = c10b.run(json.loads(base10))
+    proto10b = next(b for b in q10b["targets"][0]["blocks"].values()
+                    if b["opcode"] == "procedures_prototype")
+    assert json.loads(proto10b["mutation"]["argumentids"]) == [ARG_LONG], \
+        "shorten_ids=False で引数IDが変更された"
+    assert c10b.stats["arg_ids_shortened"] == 0
+
+    # 任意オプション: コメント全削除とレイアウト再配置
+    p10c = json.loads(base10)
+    c10c = Compressor(Options(strip_comments=True, compact_workspace=True))
+    q10c = c10c.run(p10c)
+    st10c = c10c.stats
+    sb10c = q10c["targets"][0]["blocks"]
+    assert st10c["comments_removed"] == 1, st10c["comments_removed"]
+    assert not q10c["targets"][0].get("comments"), q10c["targets"][0].get("comments")
+    assert all("comment" not in b for b in sb10c.values() if isinstance(b, dict))
+    roots10c = [b for b in sb10c.values()
+                if isinstance(b, dict) and b.get("topLevel") is True]
+    assert st10c["workspace_compacted"] == len(roots10c) == 2, \
+        (st10c["workspace_compacted"], len(roots10c))
+    xs = {b["x"] for b in roots10c}
+    assert xs == {40}, xs
+    ys = sorted(b["y"] for b in roots10c)
+    assert ys[0] == 40 and ys[1] > ys[0], ys
+    assert not validate_project(q10c), validate_project(q10c)
+    print("[OK] コメント全削除 / ワークスペース再配置 (opt-in)")
 
     # ---------- 6) CLI 動作 ----------
     r = subprocess.run([sys.executable, os.path.abspath("sb3_compressor.py"),
