@@ -2,6 +2,207 @@
 (function () {
   "use strict";
 
+  var LANG = /^ja\b/i.test(document.documentElement.lang || "") ? "ja" : "en";
+
+  var STRINGS = {
+    en: {
+      phases: {
+        load: "Reading file",
+        parse: "Parsing project.json",
+        collect: "Analyzing stores",
+        targets: "Compressing scripts",
+        finalize: "Finalizing project",
+        serialize: "Writing project.json",
+        package: "Repacking .sb3",
+        other: "Compressing"
+      },
+      phaseMessages: null,
+      stats: {
+        blocks_renamed: "block IDs renamed",
+        vars_renamed: "variables renamed",
+        lists_renamed: "lists renamed",
+        broadcasts_renamed: "broadcasts renamed",
+        fields_removed: "default fields removed",
+        monitors_updated: "monitors updated",
+        click_rewrites: "click hats rewritten",
+        vars_removed: "unused variables removed",
+        lists_removed: "unused lists removed",
+        procs_renamed: "custom blocks shortened",
+        args_renamed: "arguments renamed",
+        obscured_shadows_removed: "hidden defaults removed",
+        unreachable_blocks_removed: "unreachable blocks removed",
+        unreachable_comments_removed: "unreachable comments removed",
+        broadcasts_removed: "unused broadcasts removed",
+        procs_removed: "unused definitions removed",
+        vars_initialized: "variable starting values blanked",
+        lists_initialized: "list starting values blanked",
+        duplicates_extracted: "duplicate groups extracted",
+        dup_blocks_saved: "blocks saved by duplicates",
+        near_duplicates_extracted: "near-duplicate groups extracted",
+        near_blocks_saved: "blocks saved by near-duplicates",
+        ifelse_converted: "if-else blocks simplified",
+        noop_procs_removed: "do-nothing definitions removed",
+        noop_calls_removed: "do-nothing calls removed",
+        noop_receivers_removed: "do-nothing receivers removed",
+        noop_broadcasts_removed: "dead broadcasts removed",
+        noop_messages_removed: "dead messages removed",
+        procs_inlined: "single-use definitions inlined",
+        const_values_folded: "constant expressions folded",
+        loops_created: "repeat loops created",
+        loop_blocks_saved: "blocks saved by loops",
+        const_vars_inlined: "constant variables inlined",
+        const_reads_inlined: "constant reads replaced"
+      },
+      ready: "Ready",
+      settingsChanged: "Settings changed",
+      runAgainPrompt: "Run again to apply the new options.",
+      failed: "Failed",
+      complete: "Complete",
+      cancelled: "Cancelled",
+      cancelMessage: "Compression cancelled. The file is still loaded.",
+      chooseProject: "Choose a project to begin.",
+      noFileMeasured: "no file measured yet",
+      measuring: "measuring project.json",
+      smaller: "smaller project.json",
+      larger: "larger project.json",
+      downloadSb3: "Download .sb3",
+      downloadJson: "Download .json",
+      reading: "Reading {name}…",
+      compressing: "Compressing",
+      compressingProject: "Compressing {name}. This can take a moment.",
+      loadingEngine: "Loading engine",
+      mainThreadNote: "Running in this tab instead of a background worker. Keep the tab open.",
+      mainThreadError: "The compressor could not start in this tab: {error} Serving the page over HTTP, for example with python -m http.server, avoids this.",
+      readFileError: "Could not read that file: {error}",
+      loadScriptError: "Could not load {src}.",
+      engineMissing: "The compressor engine did not start.",
+      compressionFailed: "Compression failed.",
+      invalidFile: "Choose a .sb3 file or a project.json file.",
+      emptyFile: "That file is empty. Choose a Scratch project.",
+      chooseFirst: "Choose a .sb3 or project.json file first.",
+      optionsReset: "Options reset. Run again to apply them.",
+      downloaded: "Downloaded {name}.",
+      downloadReady: "Ready to download {name}.",
+      noStructuralChanges: "no structural changes counted",
+      gaugeKept: "{kept}% kept",
+      gaugeAria: "Compression gauge: {kept} percent of project.json kept, {removed} percent removed.",
+      gaugeNone: "No compression measured yet",
+      gaugeRunning: "Compressing project"
+    },
+    ja: {
+      phases: {
+        load: "ファイル読み込み",
+        parse: "project.json 解析",
+        collect: "変数とリストの解析",
+        targets: "スクリプト圧縮",
+        finalize: "仕上げ",
+        serialize: "JSON 書き出し",
+        package: ".sb3 再パッケージ",
+        other: "圧縮中"
+      },
+      phaseMessages: {
+        load: "ファイルを読み込んでいます…",
+        parse: "project.json を解析しています…",
+        collect: "変数とリストを解析しています…",
+        targets: "スクリプトを圧縮しています…",
+        finalize: "プロジェクトを仕上げています…",
+        serialize: "JSON を書き出しています…",
+        package: ".sb3 を再パッケージしています…"
+      },
+      stats: {
+        blocks_renamed: "ブロック ID を短縮",
+        vars_renamed: "変数名を短縮",
+        lists_renamed: "リスト名を短縮",
+        broadcasts_renamed: "ブロードキャスト名を短縮",
+        fields_removed: "既定フィールドを削除",
+        monitors_updated: "モニターを更新",
+        click_rewrites: "クリックの書き換え",
+        vars_removed: "未使用の変数を削除",
+        lists_removed: "未使用のリストを削除",
+        procs_renamed: "カスタムブロック名を短縮",
+        args_renamed: "引数名を短縮",
+        obscured_shadows_removed: "隠れた既定値を削除",
+        unreachable_blocks_removed: "到達しないブロックを削除",
+        unreachable_comments_removed: "到達しないコメントを削除",
+        broadcasts_removed: "未使用のブロードキャストを削除",
+        procs_removed: "未使用の定義を削除",
+        vars_initialized: "変数の初期値を空に",
+        lists_initialized: "リストの初期値を空に",
+        duplicates_extracted: "重複したコードを抽出",
+        dup_blocks_saved: "重複で削減したブロック",
+        near_duplicates_extracted: "似たコードを統合",
+        near_blocks_saved: "似たコードで削減したブロック",
+        ifelse_converted: "if-else を if に",
+        noop_procs_removed: "何もしない定義を削除",
+        noop_calls_removed: "何もしない呼び出しを削除",
+        noop_receivers_removed: "何もしない受信を削除",
+        noop_broadcasts_removed: "不要なブロードキャストを削除",
+        noop_messages_removed: "不要なメッセージを削除",
+        procs_inlined: "1回だけの定義を展開",
+        const_values_folded: "定数計算を畳み込み",
+        loops_created: "repeat ループを作成",
+        loop_blocks_saved: "ループで削減したブロック",
+        const_vars_inlined: "定数変数を値に置換",
+        const_reads_inlined: "定数の参照を置換"
+      },
+      ready: "準備完了",
+      settingsChanged: "設定を変更しました",
+      runAgainPrompt: "新しい設定で再実行してください。",
+      failed: "失敗",
+      complete: "完了",
+      cancelled: "キャンセル",
+      cancelMessage: "圧縮を中止しました。ファイルは読み込まれたままです。",
+      chooseProject: "プロジェクトを選ぶと開始します。",
+      noFileMeasured: "まだファイルがありません",
+      measuring: "project.json を計測中",
+      smaller: "project.json の削減率",
+      larger: "project.json が増えました",
+      downloadSb3: ".sb3 をダウンロード",
+      downloadJson: ".json をダウンロード",
+      reading: "{name} を読み込んでいます…",
+      compressing: "圧縮しています",
+      compressingProject: "{name} を圧縮しています。少しお待ちください。",
+      loadingEngine: "エンジンを読み込み中",
+      mainThreadNote: "バックグラウンドではなく、このタブ内で実行します。タブを閉じずにお待ちください。",
+      mainThreadError: "このタブ内で圧縮を開始できませんでした: {error} ページを HTTP で配信すると回避できます（例: python -m http.server）。",
+      readFileError: "ファイルを読み込めませんでした: {error}",
+      loadScriptError: "{src} を読み込めませんでした。",
+      engineMissing: "圧縮エンジンが起動しませんでした。",
+      compressionFailed: "圧縮に失敗しました。",
+      invalidFile: ".sb3 または project.json を選んでください。",
+      emptyFile: "ファイルが空です。Scratch プロジェクトを選んでください。",
+      chooseFirst: "先に .sb3 または project.json を選んでください。",
+      optionsReset: "設定を初期値に戻しました。再実行すると反映されます。",
+      downloaded: "{name} をダウンロードしました。",
+      downloadReady: "{name} をダウンロードできます。",
+      noStructuralChanges: "構造の変更はありません",
+      gaugeKept: "{kept}% 残存",
+      gaugeAria: "圧縮ゲージ: project.json の {kept}% が残り、{removed}% を削減しました。",
+      gaugeNone: "まだ計測結果はありません",
+      gaugeRunning: "プロジェクトを圧縮中"
+    }
+  };
+
+  var L = STRINGS[LANG];
+
+  function fmt(template, vars) {
+    return String(template).replace(/\{(\w+)\}/g, function (match, key) {
+      return vars && Object.prototype.hasOwnProperty.call(vars, key) ? vars[key] : match;
+    });
+  }
+
+  // The page may live in a subdirectory (for example /ja/), so resolve the
+  // worker and engine files from this script's own location.
+  var APP_BASE = (function () {
+    var script = document.currentScript;
+    var src = script && script.src ? script.src : window.location.href;
+    try {
+      return new URL(".", src).href;
+    } catch (_) {
+      return "";
+    }
+  })();
+
   var DEFAULTS = {
     stripDefaults: true,
     shortenIds: true,
@@ -22,52 +223,16 @@
     propagateConstants: true
   };
 
-  var PHASE_LABELS = {
-    load: "Reading file",
-    parse: "Parsing project.json",
-    collect: "Analyzing stores",
-    targets: "Compressing scripts",
-    finalize: "Finalizing project",
-    serialize: "Writing project.json",
-    package: "Repacking .sb3"
-  };
+  var PHASE_LABELS = L.phases;
 
-  var STAT_LABELS = {
-    blocks_renamed: "block IDs renamed",
-    vars_renamed: "variables renamed",
-    lists_renamed: "lists renamed",
-    broadcasts_renamed: "broadcasts renamed",
-    fields_removed: "default fields removed",
-    monitors_updated: "monitors updated",
-    click_rewrites: "click hats rewritten",
-    vars_removed: "unused variables removed",
-    lists_removed: "unused lists removed",
-    procs_renamed: "custom blocks shortened",
-    args_renamed: "arguments renamed",
-    obscured_shadows_removed: "hidden defaults removed",
-    unreachable_blocks_removed: "unreachable blocks removed",
-    unreachable_comments_removed: "unreachable comments removed",
-    broadcasts_removed: "unused broadcasts removed",
-    procs_removed: "unused definitions removed",
-    vars_initialized: "variable starting values blanked",
-    lists_initialized: "list starting values blanked",
-    duplicates_extracted: "duplicate groups extracted",
-    dup_blocks_saved: "blocks saved by duplicates",
-    near_duplicates_extracted: "near-duplicate groups extracted",
-    near_blocks_saved: "blocks saved by near-duplicates",
-    ifelse_converted: "if-else blocks simplified",
-    noop_procs_removed: "do-nothing definitions removed",
-    noop_calls_removed: "do-nothing calls removed",
-    noop_receivers_removed: "do-nothing receivers removed",
-    noop_broadcasts_removed: "dead broadcasts removed",
-    noop_messages_removed: "dead messages removed",
-    procs_inlined: "single-use definitions inlined",
-    const_values_folded: "constant expressions folded",
-    loops_created: "repeat loops created",
-    loop_blocks_saved: "blocks saved by loops",
-    const_vars_inlined: "constant variables inlined",
-    const_reads_inlined: "constant reads replaced"
-  };
+  // Progress details come from the engine in English; the Japanese page uses
+  // a localized description for each phase instead.
+  function progressText(phase, detail) {
+    if (L.phaseMessages) return L.phaseMessages[phase] || L.compressing;
+    return detail;
+  }
+
+  var STAT_LABELS = L.stats;
 
   var KEY_STATS = [
     "blocks_renamed",
@@ -271,16 +436,16 @@
     el.gaugeRemoved.style.width = "0%";
     el.gaugeKeptLabel.textContent = "—";
     el.figureNum.textContent = "0.0";
-    el.figureLabel.textContent = "no file measured yet";
+    el.figureLabel.textContent = L.noFileMeasured;
     el.downloadBtn.disabled = true;
-    el.downloadBtn.textContent = "Download .sb3";
+    el.downloadBtn.textContent = L.downloadSb3;
     el.stats.hidden = true;
     el.statsKey.textContent = "";
     el.statsAll.textContent = "";
-    el.gauge.setAttribute("aria-label", "No compression measured yet");
+    el.gauge.setAttribute("aria-label", L.gaugeNone);
     setProgress(0);
-    setPhase("Ready");
-    setMessage("Choose a project to begin.", false);
+    setPhase(L.ready);
+    setMessage(L.chooseProject, false);
   }
 
   function resetAll() {
@@ -310,12 +475,12 @@
     if (!result) return;
     stale = true;
     el.runAgainBtn.hidden = false;
-    setPhase("Settings changed");
-    setMessage("Run again to apply the new options.", false);
+    setPhase(L.settingsChanged);
+    setMessage(L.runAgainPrompt, false);
   }
 
   function showError(message) {
-    setPhase("Failed");
+    setPhase(L.failed);
     setMessage(message, true);
     el.downloadBtn.disabled = !result;
     el.runAgainBtn.hidden = !currentFile;
@@ -338,11 +503,11 @@
   function handleFile(file) {
     if (!file) return;
     if (!isProjectName(file.name)) {
-      showError("Choose a .sb3 file or a project.json file.");
+      showError(L.invalidFile);
       return;
     }
     if (!file.size) {
-      showError("That file is empty. Choose a Scratch project.");
+      showError(L.emptyFile);
       return;
     }
 
@@ -364,7 +529,7 @@
     el.fileRow.hidden = false;
     el.runAgainBtn.hidden = true;
     el.downloadBtn.disabled = true;
-    el.downloadBtn.textContent = /\.json$/i.test(file.name) ? "Download .json" : "Download .sb3";
+    el.downloadBtn.textContent = /\.json$/i.test(file.name) ? L.downloadJson : L.downloadSb3;
     el.stats.hidden = true;
     startCompression();
   }
@@ -383,7 +548,7 @@
       };
       script.onerror = function () {
         script.remove();
-        reject(new Error("Could not load " + src + "."));
+        reject(new Error(fmt(L.loadScriptError, { src: src })));
       };
       document.head.appendChild(script);
     });
@@ -391,11 +556,11 @@
 
   function loadMainThreadEngine() {
     if (mainThreadEngine) return mainThreadEngine;
-    mainThreadEngine = loadScript("jszip.min.js")
-      .then(function () { return loadScript("compressor.js"); })
+    mainThreadEngine = loadScript(APP_BASE + "jszip.min.js")
+      .then(function () { return loadScript(APP_BASE + "compressor.js"); })
       .then(function () {
         if (!window.JSZip || !window.SB3) {
-          throw new Error("The compressor engine did not start.");
+          throw new Error(L.engineMissing);
         }
       })
       .catch(function (error) {
@@ -416,14 +581,14 @@
   // opened directly from disk). The compression itself is identical, but it
   // occupies the tab until the readout appears.
   function runOnMainThread(buffer, file, myRun) {
-    setPhase("Loading engine");
-    setMessage("Running in this tab instead of a background worker. Keep the tab open.", false);
+    setPhase(L.loadingEngine);
+    setMessage(L.mainThreadNote, false);
 
     loadMainThreadEngine().then(function () {
       if (myRun !== runId) return;
       el.cancelBtn.hidden = true;
       setPhase(PHASE_LABELS.load);
-      setMessage("Compressing " + file.name + ". This can take a moment.", false);
+      setMessage(fmt(L.compressingProject, { name: file.name }), false);
       // Give the browser one frame to paint the message above before the
       // synchronous part of the compression starts.
       return new Promise(function (resolve) { setTimeout(resolve, 40); });
@@ -436,8 +601,8 @@
         function (phase, frac, message) {
           if (myRun !== runId) return;
           setProgress(window.SB3.progressPercent(phase, frac));
-          setPhase(PHASE_LABELS[phase] || "Compressing");
-          if (message) setMessage(message, false);
+          setPhase(PHASE_LABELS[phase] || PHASE_LABELS.other);
+          if (message) setMessage(progressText(phase, message), false);
         }
       );
     }).then(function (out) {
@@ -451,17 +616,15 @@
       running = false;
       setBusy(false);
       el.cancelBtn.hidden = true;
-      showError(
-        "The compressor could not start in this tab: " +
-        (error && error.message ? error.message : error) +
-        " Serving the page over HTTP, for example with python -m http.server, avoids this."
-      );
+      showError(fmt(L.mainThreadError, {
+        error: error && error.message ? error.message : error
+      }));
     });
   }
 
   function startCompression() {
     if (!currentFile) {
-      showError("Choose a .sb3 or project.json file first.");
+      showError(L.chooseFirst);
       return;
     }
     if (running) return;
@@ -482,14 +645,14 @@
     el.fileSizes.textContent = humanSize(currentFile.size) + "  →  —";
     el.jsonSizes.textContent = "—";
     el.figureNum.textContent = "0.0";
-    el.figureLabel.textContent = "measuring project.json";
+    el.figureLabel.textContent = L.measuring;
     el.gaugeKept.style.width = "100%";
     el.gaugeRemoved.style.width = "0%";
     el.gaugeKeptLabel.textContent = "—";
-    el.gauge.setAttribute("aria-label", "Compressing project");
+    el.gauge.setAttribute("aria-label", L.gaugeRunning);
     setProgress(0);
     setPhase(PHASE_LABELS.load);
-    setMessage("Reading " + currentFile.name + "…", false);
+    setMessage(fmt(L.reading, { name: currentFile.name }), false);
     setBusy(true);
     stopWorker();
 
@@ -506,7 +669,7 @@
 
       var fellBack = false;
       try {
-        worker = new Worker("worker.js");
+        worker = new Worker(APP_BASE + "worker.js");
       } catch (error) {
         runOnMainThread(buffer, file, myRun);
         return;
@@ -535,7 +698,9 @@
       if (myRun !== runId) return;
       running = false;
       setBusy(false);
-      showError("Could not read that file: " + (error && error.message ? error.message : error));
+      showError(fmt(L.readFileError, {
+        error: error && error.message ? error.message : error
+      }));
     });
   }
 
@@ -544,8 +709,8 @@
     if (data.type === "progress") {
       if (!running) return;
       setProgress(data.percent || 0);
-      setPhase(PHASE_LABELS[data.phase] || "Compressing");
-      if (data.message) setMessage(data.message, false);
+      setPhase(PHASE_LABELS[data.phase] || PHASE_LABELS.other);
+      if (data.message) setMessage(progressText(data.phase, data.message), false);
       return;
     }
     if (data.type === "error") {
@@ -553,7 +718,7 @@
       stopWorker();
       setBusy(false);
       el.cancelBtn.hidden = true;
-      showError(data.message || "Compression failed.");
+      showError(data.message || L.compressionFailed);
       return;
     }
     if (data.type === "done") {
@@ -592,24 +757,25 @@
     var removed = Math.max(0, Math.min(100, ratio));
     el.gaugeKept.style.width = kept + "%";
     el.gaugeRemoved.style.width = removed + "%";
-    el.gaugeKeptLabel.textContent = kept.toFixed(1) + "% kept";
+    el.gaugeKeptLabel.textContent = fmt(L.gaugeKept, { kept: kept.toFixed(1) });
     el.figureNum.textContent = Math.abs(ratio).toFixed(1);
-    el.figureLabel.textContent = ratio >= 0 ? "smaller project.json" : "larger project.json";
-    el.gauge.setAttribute("aria-label",
-      "Compression gauge: " + kept.toFixed(1) + " percent of project.json kept, " +
-      removed.toFixed(1) + " percent removed.");
+    el.figureLabel.textContent = ratio >= 0 ? L.smaller : L.larger;
+    el.gauge.setAttribute("aria-label", fmt(L.gaugeAria, {
+      kept: kept.toFixed(1),
+      removed: removed.toFixed(1)
+    }));
 
     el.jsonSizes.textContent = humanSize(data.origJsonSize) + "  →  " + humanSize(data.newJsonSize);
     el.fileSizes.textContent = humanSize(data.origFileSize) + "  →  " + humanSize(data.newFileSize);
 
     el.downloadBtn.disabled = false;
-    el.downloadBtn.textContent = "Download " + (isJson ? ".json" : ".sb3");
+    el.downloadBtn.textContent = isJson ? L.downloadJson : L.downloadSb3;
     el.stats.hidden = false;
     renderStats(data.stats || {});
 
     setProgress(100);
-    setPhase("Complete");
-    setMessage("Ready to download " + outputName + ".", false);
+    setPhase(L.complete);
+    setMessage(fmt(L.downloadReady, { name: outputName }), false);
 
     if (staleAfterRun) {
       staleAfterRun = false;
@@ -630,7 +796,7 @@
       shown += 1;
     });
     if (!shown) {
-      el.statsKey.appendChild(statRow("no structural changes counted", 0));
+      el.statsKey.appendChild(statRow(L.noStructuralChanges, 0));
     }
 
     var keys = Object.keys(STAT_LABELS).filter(function (key) {
@@ -668,8 +834,8 @@
     el.cancelBtn.hidden = true;
     el.runAgainBtn.hidden = !currentFile;
     el.downloadBtn.disabled = !result;
-    setPhase("Cancelled");
-    setMessage("Compression cancelled. The file is still loaded.", false);
+    setPhase(L.cancelled);
+    setMessage(L.cancelMessage, false);
     setProgress(0);
   }
 
@@ -703,7 +869,7 @@
     document.body.appendChild(link);
     link.click();
     link.remove();
-    setMessage("Downloaded " + result.name + ".", false);
+    setMessage(fmt(L.downloaded, { name: result.name }), false);
   });
 
   optionInputs.forEach(function (input) {
@@ -720,7 +886,7 @@
     applyOptions(DEFAULTS);
     saveOptions();
     markStale();
-    setMessage("Options reset. Run again to apply them.", false);
+    setMessage(L.optionsReset, false);
   });
 
   // Accept a dropped file anywhere on the page.

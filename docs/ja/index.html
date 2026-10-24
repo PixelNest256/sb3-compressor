@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SB3 Compressor — Scratch プロジェクトを小さくする</title>
+<meta name="description" content="Scratch / TurboWarp の .sb3 をブラウザ内で小さくします。使っていないデータや繰り返すコードを削り、動作はそのまま。アップロードはありません。">
+<meta name="theme-color" content="#e7e8e1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23171a16'/%3E%3Crect x='6' y='7' width='20' height='6' fill='%23e7e8e1'/%3E%3Crect x='6' y='16' width='11' height='9' fill='%23e14b12'/%3E%3Crect x='19' y='16' width='7' height='9' fill='%23565a4e'/%3E%3C/svg%3E">
+<script>
+/* Apply the saved theme before the stylesheet paints. */
+(function () {
+  var saved = null;
+  try { saved = localStorage.getItem("sb3-compressor-theme-v1"); } catch (e) {}
+  var dark = saved
+    ? saved === "dark"
+    : !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  var meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", dark ? "#15180f" : "#e7e8e1");
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+JP:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">圧縮ツールへ移動</a>
+
+<div class="sheet">
+  <header class="masthead">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-name">SB3 Compressor</span>
+      <span class="brand-sub">ブラウザ内ツール</span>
+    </div>
+    <div class="masthead-links">
+      <a class="lang-link" href="../" hreflang="en" lang="en">English</a>
+      <div class="theme-switch" role="group" aria-label="配色">
+        <button type="button" data-theme-set="light">ライト</button>
+        <button type="button" data-theme-set="dark">ダーク</button>
+      </div>
+      <span class="local-flag"><span class="dot" aria-hidden="true"></span>端末内のみ</span>
+      <a class="source-link" href="https://github.com/PixelNest256/sb3-compressor" rel="noopener">ソース&nbsp;↗</a>
+    </div>
+  </header>
+
+  <main id="main" class="layout">
+    <div class="main-col">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">Scratch / TurboWarp のプロジェクトファイル向け</p>
+        <h1 id="page-title">.sb3 を圧縮</h1>
+        <p class="lead">
+          使っていないデータを削り、ID を短くし、繰り返すコードをひとつに
+          まとめます。書き出した <code>.sb3</code> は、これまでと同じ動作の
+          まま開けます。アップロードも Python もインストールも要りません。
+        </p>
+        <dl class="spec">
+          <div><dt>読み込み</dt><dd>.sb3 / project.json</dd></div>
+          <div><dt>書き出し</dt><dd>*_compressed.sb3</dd></div>
+          <div><dt>送信</dt><dd>なし</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel input-panel" aria-labelledby="input-title">
+        <div class="panel-head">
+          <h2 id="input-title">入力</h2>
+          <span class="head-rule" aria-hidden="true"></span>
+          <span class="panel-meta">.sb3 / .json</span>
+        </div>
+
+        <div id="dropzone" class="dropzone" role="button" tabindex="0"
+             aria-describedby="drop-hint" aria-label=".sb3 または project.json を選択">
+          <span class="corner tl" aria-hidden="true"></span>
+          <span class="corner tr" aria-hidden="true"></span>
+          <span class="corner bl" aria-hidden="true"></span>
+          <span class="corner br" aria-hidden="true"></span>
+          <span class="drop-glyph" aria-hidden="true">.sb3</span>
+          <p class="drop-title">プロジェクトをドロップ</p>
+          <p class="drop-hint" id="drop-hint">または <span class="linkish">ファイルを選択</span></p>
+        </div>
+        <input type="file" id="fileInput" class="visually-hidden" accept=".sb3,.json,application/json,application/zip">
+
+        <div id="fileRow" class="file-row" hidden>
+          <div class="file-meta">
+            <span class="file-name" id="fileName">project.sb3</span>
+            <span class="file-size" id="fileSize">—</span>
+          </div>
+          <button type="button" id="clearBtn" class="text-btn">削除</button>
+        </div>
+
+        <p class="privacy">ファイルはこのタブ内で読み込まれます。サーバーには送信されません。</p>
+      </section>
+
+      <section class="panel options-panel" aria-labelledby="options-title">
+        <div class="panel-head">
+          <h2 id="options-title">オプション</h2>
+          <span class="head-rule" aria-hidden="true"></span>
+          <button type="button" id="resetOptions" class="text-btn">初期値に戻す</button>
+        </div>
+
+        <div class="opt-grid">
+          <fieldset class="opt-group">
+            <legend>容量を削る</legend>
+            <label class="opt"><input type="checkbox" checked data-opt="stripDefaults"><span>Scratch が復元する値を削除</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="removeUnused"><span>未使用の変数とリストを削除</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="clearInitialValues"><span>上書きされる初期値を空にする</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="dropObscuredShadows"><span>隠れた入力の既定値を削除</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="removeUnreachable"><span>実行されないコードを削除</span></label>
+          </fieldset>
+
+          <fieldset class="opt-group">
+            <legend>構造をまとめる</legend>
+            <label class="opt"><input type="checkbox" checked data-opt="extractDuplicates"><span>繰り返すコードを抽出</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="nearDuplicates"><span>似たコードをまとめる</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="loopDuplicates"><span>繰り返しをループにする</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="inlineSingleCall"><span>1回だけの定義を展開</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="removeNoops"><span>何もしないブロックを削除</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="simplifyIfElse"><span>空の if-else を if にする</span></label>
+          </fieldset>
+
+          <fieldset class="opt-group">
+            <legend>名前と定数</legend>
+            <label class="opt"><input type="checkbox" checked data-opt="shortenIds"><span>内部 ID を短縮</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="freqIds"><span>頻出ブロックを短い ID に</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="compressProcs"><span>カスタムブロック名を短縮</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="foldConstants"><span>定数計算を畳み込む</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="propagateConstants"><span>定数変数を値に置換</span></label>
+          </fieldset>
+        </div>
+
+        <label class="opt opt-warn">
+          <input type="checkbox" data-opt="clickToStage">
+          <span>スプライトのクリックをステージのクリックに書き換える</span>
+          <span class="tag">動作が変わります</span>
+        </label>
+
+        <p class="options-note">
+          最後の項目以外は、動作を保つためのオプションです。似たコードの統合では、
+          リテラル入力だけを引数にし、ドロップダウンの項目は決して引数にしません。
+        </p>
+      </section>
+
+      <section class="notes" aria-labelledby="notes-title">
+        <div class="panel-head">
+          <h2 id="notes-title">注意事項</h2>
+          <span class="head-rule" aria-hidden="true"></span>
+        </div>
+        <details>
+          <summary>変わること、変わらないこと</summary>
+          <div class="notes-body">
+            <p>
+              圧縮するのは zip 内のプロジェクトデータだけです。コスチュームと
+              音はそのままコピーされます。
+            </p>
+            <ul>
+              <li>ブロック ID、変数名、リスト名、ブロードキャスト名は、短い生成 ID になります。</li>
+              <li>未使用の変数、到達しないスクリプト、既定値のフィールドは削除されます。</li>
+              <li>繰り返しや似たコードは、ファイルが小さくなる場合に限り、新しいカスタムブロックになります。</li>
+              <li>元の名前は出力から復元できません。元のファイルは必ず残しておいてください。</li>
+            </ul>
+            <p class="fine">
+              出力は、Scratch VM が参照する <code>parent: null</code> と
+              スタック末尾の <code>next: null</code> を保持します。
+            </p>
+          </div>
+        </details>
+        <details>
+          <summary>動作の根拠</summary>
+          <div class="notes-body">
+            <p>
+              エンジンは、このリポジトリの Python CLI と同じ圧縮器です。構造、
+              決定性、ランダム生成したプロジェクト、そして TurboWarp の
+              <code>scratch-vm</code> との差分再生（コンパイラのオン／オフ）で
+              検証しています。
+            </p>
+          </div>
+        </details>
+      </section>
+    </div>
+
+    <aside class="side-col" aria-label="圧縮結果">
+      <section class="readout" aria-labelledby="readout-title">
+        <div class="readout-head">
+          <h2 id="readout-title">圧縮結果</h2>
+          <span class="stamp" aria-hidden="true">端末内<br>のみ</span>
+        </div>
+
+        <div class="size-pair">
+          <div class="size-row">
+            <span class="label">project.json</span>
+            <span class="value" id="jsonSizes">—</span>
+          </div>
+          <div class="size-row">
+            <span class="label">.sb3 ファイル</span>
+            <span class="value" id="fileSizes">—</span>
+          </div>
+        </div>
+
+        <div class="gauge" id="gauge" role="img" aria-label="まだ計測結果はありません">
+          <div class="gauge-track">
+            <div class="gauge-kept" id="gaugeKept"><span id="gaugeKeptLabel">—</span></div>
+            <div class="gauge-removed" id="gaugeRemoved"></div>
+          </div>
+          <div class="gauge-scale" aria-hidden="true">
+            <span>0</span><span>25</span><span>50</span><span>75</span><span>100%</span>
+          </div>
+          <div class="gauge-legend">
+            <span><i class="key kept" aria-hidden="true"></i>残存</span>
+            <span><i class="key removed" aria-hidden="true"></i>削減</span>
+          </div>
+        </div>
+
+        <div class="figure">
+          <span class="figure-num" id="figureNum">0.0</span><span class="figure-unit">%</span>
+          <span class="figure-label" id="figureLabel">まだファイルがありません</span>
+        </div>
+
+        <div class="run-state">
+          <div class="run-line">
+            <span id="phaseLabel" aria-live="polite">準備完了</span>
+            <span id="percentLabel">0%</span>
+          </div>
+          <div class="progress" id="progress" role="progressbar"
+               aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <span id="progressBar"></span>
+          </div>
+          <p class="run-message" id="runMessage">プロジェクトを選ぶと開始します。</p>
+        </div>
+
+        <div class="readout-actions">
+          <button type="button" id="downloadBtn" class="btn-primary" disabled>.sb3 をダウンロード</button>
+          <div class="action-row">
+            <button type="button" id="runAgainBtn" class="btn-quiet" hidden>もう一度</button>
+            <button type="button" id="cancelBtn" class="btn-quiet" hidden>中止</button>
+          </div>
+        </div>
+
+        <div id="stats" class="stats" hidden>
+          <div class="stats-key" id="statsKey"></div>
+          <details class="stats-all">
+            <summary>すべての内訳</summary>
+            <dl id="statsAll"></dl>
+          </details>
+        </div>
+
+        <div class="readout-foot">
+          <span>エンジン: SB3 Compressor</span>
+          <span>v1.0</span>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <p>
+      <strong>SB3 Compressor</strong> · ブラウザ版。すべてこのタブ内で処理され、
+      ファイルは送信されません。
+    </p>
+    <p class="footer-links">
+      <a href="https://github.com/PixelNest256/sb3-compressor" rel="noopener">GitHub リポジトリ ↗</a>
+      <span aria-hidden="true">/</span>
+      <a href="https://github.com/PixelNest256/sb3-compressor/blob/main/sb3_compressor.py" rel="noopener">Python CLI</a>
+      <span aria-hidden="true">/</span>
+      <span>MIT ライセンス</span>
+    </p>
+  </footer>
+</div>
+
+<script src="../app.js"></script>
+</body>
+</html>

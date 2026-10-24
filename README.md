@@ -133,6 +133,10 @@ The interface follows the operating system's light or dark preference by
 default. The **Light / Dark** switch in the header overrides it, and the choice
 is remembered in `localStorage`.
 
+The English page lives at `docs/index.html` and the Japanese page at
+`docs/ja/index.html` (served at `/ja/`). The header switch moves between them;
+both use the same stylesheet and compressor engine.
+
 To preview locally:
 
 ```console

@@ -236,6 +236,14 @@ code {
 }
 .theme-switch button:focus-visible { outline: 2px solid var(--signal); outline-offset: 1px; }
 
+.lang-link {
+  padding-bottom: 1px;
+  border-bottom: 1px solid var(--rule);
+  text-decoration: none;
+  text-transform: none;
+}
+.lang-link:hover { border-color: var(--ink); }
+
 /* ------------------------------------------------------------ layout */
 
 .layout {
@@ -944,6 +952,87 @@ h1 {
 .footer-links { display: flex; flex-wrap: wrap; gap: 4px 10px; }
 .footer-links a { color: var(--ink); }
 
+/* ------------------------------------------------- Japanese typography */
+
+html[lang="ja"] {
+  --body: "IBM Plex Sans JP", "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif;
+  --mono: "IBM Plex Mono", "IBM Plex Sans JP", "Hiragino Sans", ui-monospace, monospace;
+  --jp: "IBM Plex Sans JP", "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif;
+}
+
+html[lang="ja"] body { line-height: 1.6; }
+
+html[lang="ja"] h1 {
+  font-family: var(--jp);
+  font-weight: 700;
+  font-size: clamp(2.6rem, 6.6vw, 5.2rem);
+  line-height: 1.1;
+  letter-spacing: 0;
+}
+
+html[lang="ja"] .lead {
+  max-width: 44em;
+  font-size: 16px;
+  line-height: 1.85;
+}
+
+html[lang="ja"] .eyebrow { font-size: 10.5px; letter-spacing: 0.05em; }
+html[lang="ja"] .spec dt { font-size: 9px; letter-spacing: 0.06em; }
+html[lang="ja"] .spec dd { font-size: 10px; }
+
+html[lang="ja"] .drop-title {
+  font-family: var(--jp);
+  font-size: 25px;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+}
+html[lang="ja"] .drop-hint { font-size: 13px; }
+html[lang="ja"] .privacy { font-size: 10px; letter-spacing: 0; }
+
+html[lang="ja"] .panel-head h2 {
+  font-family: var(--jp);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+}
+html[lang="ja"] .text-btn { font-size: 10px; letter-spacing: 0.02em; }
+
+html[lang="ja"] .opt-group legend { font-size: 9px; letter-spacing: 0.06em; }
+html[lang="ja"] .opt { font-size: 13px; line-height: 1.5; }
+html[lang="ja"] .opt-warn { font-size: 13px; }
+html[lang="ja"] .tag { font-size: 9px; letter-spacing: 0.03em; }
+html[lang="ja"] .options-note { font-size: 12px; line-height: 1.75; }
+
+html[lang="ja"] .notes summary { font-size: 13px; }
+html[lang="ja"] .notes-body { font-size: 13px; line-height: 1.85; }
+html[lang="ja"] .notes-body .fine { font-size: 11.5px; line-height: 1.7; }
+
+html[lang="ja"] .readout-head h2 {
+  font-family: var(--jp);
+  font-size: 13px;
+  letter-spacing: 0.05em;
+}
+html[lang="ja"] .stamp { font-size: 8px; line-height: 1.3; letter-spacing: 0.04em; }
+html[lang="ja"] .size-row .label { font-size: 9px; letter-spacing: 0.04em; }
+html[lang="ja"] .gauge-legend { font-size: 9px; letter-spacing: 0.04em; }
+html[lang="ja"] .figure-label { font-size: 9px; letter-spacing: 0.05em; }
+html[lang="ja"] .run-line { font-size: 10px; letter-spacing: 0.04em; }
+html[lang="ja"] .run-message {
+  min-height: 3.2em;
+  font-size: 10px;
+  line-height: 1.65;
+}
+html[lang="ja"] .btn-primary {
+  font-family: var(--jp);
+  font-size: 16px;
+  letter-spacing: 0.04em;
+}
+html[lang="ja"] .btn-quiet { padding: 8px; font-size: 10px; letter-spacing: 0.02em; }
+html[lang="ja"] .stats { font-size: 10px; }
+html[lang="ja"] .stats-key { gap: 6px; }
+html[lang="ja"] .stats-all summary { font-size: 9px; letter-spacing: 0.04em; }
+html[lang="ja"] .readout-foot { font-size: 8px; letter-spacing: 0.04em; }
+html[lang="ja"] .footer { font-size: 10px; line-height: 1.7; }
+
 /* --------------------------------------------------- dark adjustments */
 
 :root[data-theme="dark"] .readout {
@@ -1008,7 +1097,7 @@ h1 {
 @media (max-width: 560px) {
   .masthead { gap: 12px; }
   .masthead-links { gap: 8px; }
-  .masthead-links > a { display: none; }
+  .masthead-links > .source-link { display: none; }
   .brand-name { font-size: 21px; }
 }
 
