@@ -129,9 +129,10 @@ Progress and summary messages are written in English.
 
 ### Browser version (no install)
 
-`docs/` hosts two self-contained browser builds. The project compressor lives
-in `docs/sb3/`; the media compressor (costumes and sounds) lives in
-`docs/media/`; and `docs/index.html` is a landing page that links both. Each
+`docs/` hosts three self-contained browser builds. The project compressor
+lives in `docs/sb3/`; the media compressor (costumes and sounds) lives in
+`docs/media/`; the full compressor (both passes at once) lives in
+`docs/full/`; and `docs/index.html` is a landing page that links them. Each
 tool has no build step and no server-side code: `index.html`, `styles.css`,
 `app.js`, `worker.js`, `compressor.js`, a vendored copy of JSZip, and a
 `ja/index.html` Japanese page.
@@ -158,8 +159,9 @@ is remembered in `localStorage`.
 The compressor's English page lives at `docs/sb3/index.html` (served at
 `/sb3/`) and its Japanese page at `docs/sb3/ja/index.html` (`/sb3/ja/`). The
 media compressor mirrors this at `docs/media/` (`/media/`) and
-`docs/media/ja/` (`/media/ja/`). Each tool's header switch moves between its own
-two languages, and the tool links move between the two tools.
+`docs/media/ja/` (`/media/ja/`), and the full compressor at `docs/full/`
+(`/full/`) and `docs/full/ja/` (`/full/ja/`). Each tool's header switch moves
+between its own two languages, and the tool links move between the tools.
 
 To preview locally:
 
@@ -172,8 +174,8 @@ Then open <http://localhost:8000/>.
 To publish with GitHub Pages, push the repository and set
 **Settings → Pages → Deploy from a branch → `main` / `docs`**. The tools are
 then served at `https://<user>.github.io/sb3-compressor/` (landing),
-`.../sb3/`, and `.../media/`. `docs/.nojekyll` keeps Jekyll from touching the
-directory.
+`.../sb3/`, `.../media/`, and `.../full/`. `docs/.nojekyll` keeps Jekyll out of
+the way.
 
 The browser engine is a direct port of `sb3_compressor.py`. On the optional
 `test.sb3` fixture it produces the same `project.json` size and the same
@@ -210,6 +212,22 @@ compression is lossy and irreversible; keep a copy of the original file.
 The codecs are prebuilt into `docs/media/vendor/` by `build/media/`
 (`npm install && node build.mjs`); the output is committed, so a normal checkout
 needs nothing else. See `docs/media/vendor/LICENSE.md` for attributions.
+
+### Full compressor
+
+`docs/full/` runs both passes on the same file, in one job:
+
+1. the media pass compresses costumes and sounds (across the worker pool) and
+   may rewrite `project.json` when a WAV sound is converted to MP3;
+2. the project pass then shrinks `project.json` with the same engine as the SB3
+   Compressor;
+3. the zip is repacked once.
+
+It reuses the two engines (`media.js` and `project.js`, copies of the other
+tools' engines) and the same `vendor/` codecs, and exposes the project
+compressor's option groups alongside the media strength and extras. Output is
+written as `*_full.sb3`. Use `docs/sb3/` or `docs/media/` instead when you want
+to tune one pass at a time.
 
 ### Tests
 

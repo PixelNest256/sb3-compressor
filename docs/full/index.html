@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SB3 Full Compressor — shrink project data and media together</title>
+<meta name="description" content="Compress both the project logic and the media inside a Scratch or TurboWarp .sb3 in one pass: a project.json pass and a costume/sound pass, then one repack. Runs entirely in your browser.">
+<meta name="theme-color" content="#e7e8e1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23171a16'/%3E%3Crect x='5' y='6' width='22' height='5' fill='%23e7e8e1'/%3E%3Crect x='5' y='13' width='8' height='13' fill='%23e14b12'/%3E%3Crect x='15' y='13' width='5' height='8' fill='%23e14b12'/%3E%3Crect x='22' y='13' width='5' height='13' fill='%23e7e8e1'/%3E%3C/svg%3E">
+<script>
+(function () {
+  var saved = null;
+  try { saved = localStorage.getItem("sb3-full-theme-v1"); } catch (e) {}
+  var dark = saved ? saved === "dark"
+    : !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  var meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", dark ? "#15180f" : "#e7e8e1");
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to the compressor</a>
+
+<div class="sheet">
+  <header class="masthead">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-name">SB3 Full Compressor</span>
+      <span class="brand-sub">project + media</span>
+    </div>
+    <div class="masthead-links">
+      <a class="tool-link" href="../">Home</a>
+      <a class="tool-link" href="../sb3/">SB3</a>
+      <a class="tool-link" href="../media/">Media</a>
+      <a class="lang-link" href="ja/" hreflang="ja" lang="ja">日本語</a>
+      <div class="theme-switch" role="group" aria-label="Color theme">
+        <button type="button" data-theme-set="light">Light</button>
+        <button type="button" data-theme-set="dark">Dark</button>
+      </div>
+      <span class="local-flag"><span class="dot" aria-hidden="true"></span>Local only</span>
+    </div>
+  </header>
+
+  <main id="main" class="layout">
+    <div class="main-col">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">For Scratch and TurboWarp project files</p>
+        <h1 id="page-title">Compress everything.</h1>
+        <p class="lead">
+          Both compressors in one pass: the project logic inside
+          <code>project.json</code> and the costumes and sounds, then a single
+          repack. Runs entirely in this tab — no upload, no install.
+        </p>
+        <dl class="spec">
+          <div><dt>Reads</dt><dd>.sb3</dd></div>
+          <div><dt>Writes</dt><dd>*_full.sb3</dd></div>
+          <div><dt>Upload</dt><dd>none</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel input-panel" aria-labelledby="input-title">
+        <div class="panel-head">
+          <h2 id="input-title">Input</h2>
+          <span class="head-rule" aria-hidden="true"></span>
+          <span class="panel-meta">.sb3</span>
+        </div>
+        <div id="dropzone" class="dropzone" role="button" tabindex="0"
+             aria-describedby="drop-hint" aria-label="Choose an .sb3 file">
+          <span class="corner tl" aria-hidden="true"></span>
+          <span class="corner tr" aria-hidden="true"></span>
+          <span class="corner bl" aria-hidden="true"></span>
+          <span class="corner br" aria-hidden="true"></span>
+          <span class="drop-glyph" aria-hidden="true">.sb3</span>
+          <p class="drop-title">Drop a project here</p>
+          <p class="drop-hint" id="drop-hint">or <span class="linkish">choose a file</span> from your computer</p>
+        </div>
+        <input type="file" id="fileInput" class="visually-hidden" accept=".sb3,application/zip">
+        <div id="fileRow" class="file-row" hidden>
+          <div class="file-meta">
+            <span class="file-name" id="fileName">project.sb3</span>
+            <span class="file-size" id="fileSize">—</span>
+          </div>
+          <button type="button" id="clearBtn" class="text-btn">Remove</button>
+        </div>
+        <p class="privacy">The file is read in this tab. Nothing is sent to a server.</p>
+      </section>
+
+      <section class="panel options-panel" aria-labelledby="options-title">
+        <div class="panel-head">
+          <h2 id="options-title">Options</h2>
+          <span class="head-rule" aria-hidden="true"></span>
+          <button type="button" id="resetOptions" class="text-btn">Reset to defaults</button>
+        </div>
+
+        <p class="options-note" style="margin-bottom:6px">Project data — the <code>project.json</code> pass, which preserves behavior:</p>
+        <div class="opt-grid">
+          <fieldset class="opt-group">
+            <legend>Reclaim space</legend>
+            <label class="opt"><input type="checkbox" checked data-popt="stripDefaults"><span>Remove values Scratch restores</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="removeUnused"><span>Remove unused variables and lists</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="clearInitialValues"><span>Clear overwritten starting values</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="dropObscuredShadows"><span>Drop hidden input defaults</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="removeUnreachable"><span>Remove code that never runs</span></label>
+          </fieldset>
+          <fieldset class="opt-group">
+            <legend>Restructure</legend>
+            <label class="opt"><input type="checkbox" checked data-popt="extractDuplicates"><span>Extract repeated code</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="nearDuplicates"><span>Merge near-identical code</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="loopDuplicates"><span>Replace repeated runs with loops</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="inlineSingleCall"><span>Inline blocks used only once</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="removeNoops"><span>Remove do-nothing blocks</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="simplifyIfElse"><span>Turn empty if-else into if</span></label>
+          </fieldset>
+          <fieldset class="opt-group">
+            <legend>Rename &amp; fold</legend>
+            <label class="opt"><input type="checkbox" checked data-popt="shortenIds"><span>Shorten internal IDs</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="freqIds"><span>Give frequent blocks shorter IDs</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="compressProcs"><span>Shorten custom block names</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="foldConstants"><span>Calculate constant math</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="propagateConstants"><span>Replace constant variables with values</span></label>
+          </fieldset>
+        </div>
+
+        <label class="opt opt-warn">
+          <input type="checkbox" data-popt="clickToStage">
+          <span>Rewrite sprite clicks as stage clicks</span>
+          <span class="tag">changes behavior</span>
+        </label>
+
+        <div class="mode-block">
+          <div class="mode-head">
+            <p class="mode-desc">Media — costumes and sounds are re-compressed automatically. Pick a strength, then any extras.</p>
+          </div>
+          <div class="strength" id="strengthWrap">
+            <span class="strength-label">Strength</span>
+            <div class="seg" role="group" aria-label="Compression strength">
+              <button type="button" data-strength="light">Light</button>
+              <button type="button" data-strength="balanced" aria-pressed="true">Balanced</button>
+              <button type="button" data-strength="strong">Strong</button>
+            </div>
+          </div>
+          <div class="strength" id="autoExtra">
+            <span class="strength-label">Extra</span>
+            <label class="opt opt-inline"><input type="checkbox" id="optPngOptimize"><span>PNG lossless pass (slower, ~10% smaller)</span></label>
+            <label class="opt opt-inline"><input type="checkbox" id="optWavMp3"><span>Convert WAV to MP3</span></label>
+            <select id="wavMp3Bitrate" class="select select-inline" aria-label="WAV to MP3 bitrate">
+              <option value="96" selected>96 kbps</option>
+              <option value="128">128 kbps</option>
+              <option value="64">64 kbps</option>
+            </select>
+            <label class="opt opt-inline"><input type="checkbox" id="optMp3Reenc"><span>Re-encode MP3</span></label>
+            <select id="mp3Bitrate" class="select select-inline" aria-label="MP3 bitrate">
+              <option value="64">64 kbps</option>
+              <option value="96" selected>96 kbps</option>
+              <option value="128">128 kbps</option>
+            </select>
+            <p class="options-note auto-note">The PNG lossless pass (OxiPNG) shaves a little more off each PNG but is the slowest step; it is off by default.</p>
+          </div>
+        </div>
+
+        <div class="lossy-note">
+          <span class="tag">Irreversible</span>
+          <p>Media compression discards detail on purpose, and converting WAV to MP3 rewrites <code>project.json</code>. Keep a copy of the original file — the change cannot be undone.</p>
+        </div>
+
+        <div class="ledger" id="ledger" hidden>
+          <div class="ledger-summary">
+            <span id="ledgerSummary">—</span>
+            <button type="button" id="ledgerToggle" class="text-btn">Hide list</button>
+          </div>
+          <div class="ledger-list" id="ledgerList"></div>
+        </div>
+      </section>
+
+      <section class="notes" aria-labelledby="notes-title">
+        <div class="panel-head">
+          <h2 id="notes-title">Notes</h2>
+          <span class="head-rule" aria-hidden="true"></span>
+        </div>
+        <details>
+          <summary>What happens, in order</summary>
+          <div class="notes-body">
+            <ul>
+              <li>The <strong>media pass</strong> compresses costumes and sounds, spreading them across a pool of workers.</li>
+              <li>The <strong>project pass</strong> then shrinks <code>project.json</code>: unused data, unreachable code, repeated blocks, short IDs, and so on.</li>
+              <li>The file is repacked once. An asset or field is only changed when the result is actually smaller.</li>
+              <li>Keep a copy of the original. Media compression is lossy, and the output cannot be round-tripped back to original names.</li>
+            </ul>
+            <p class="fine">
+              This runs the same two engines as the dedicated <a href="../sb3/">SB3 Compressor</a>
+              and <a href="../media/">Media Compressor</a> tools. Use those when you want to
+              tune each asset by hand.
+            </p>
+          </div>
+        </details>
+      </section>
+    </div>
+
+    <aside class="side-col" aria-label="Compression result">
+      <section class="readout" aria-labelledby="readout-title">
+        <div class="readout-head">
+          <h2 id="readout-title">Compression readout</h2>
+          <span class="stamp" aria-hidden="true">Local<br>only</span>
+        </div>
+
+        <div class="size-pair">
+          <div class="size-row">
+            <span class="label">project.json</span>
+            <span class="value" id="jsonSizes">—</span>
+          </div>
+          <div class="size-row">
+            <span class="label">media bytes</span>
+            <span class="value" id="mediaSizes">—</span>
+          </div>
+          <div class="size-row">
+            <span class="label">.sb3 file</span>
+            <span class="value" id="fileSizes">—</span>
+          </div>
+        </div>
+
+        <div class="mix" id="mix" role="img" aria-label="No media measured yet">
+          <div class="mix-head"><span>Media mix</span><span id="mixTotal">—</span></div>
+          <div class="mix-track" id="mixTrack">
+            <span class="mix-image" id="mixImage"></span>
+            <span class="mix-vector" id="mixVector"></span>
+            <span class="mix-audio" id="mixAudio"></span>
+          </div>
+          <div class="mix-legend">
+            <span><i class="k-image" aria-hidden="true"></i>Images</span>
+            <span><i class="k-vector" aria-hidden="true"></i>Vector</span>
+            <span><i class="k-audio" aria-hidden="true"></i>Audio</span>
+          </div>
+        </div>
+
+        <div class="figure">
+          <span class="figure-num" id="figureNum">0.0</span><span class="figure-unit">%</span>
+          <span class="figure-label" id="figureLabel">smaller .sb3 file</span>
+        </div>
+
+        <div class="run-state">
+          <div class="run-line">
+            <span id="phaseLabel" aria-live="polite">Ready</span>
+            <span id="percentLabel">0%</span>
+          </div>
+          <div class="progress" id="progress" role="progressbar"
+               aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <span id="progressBar"></span>
+          </div>
+          <p class="run-message" id="runMessage">Choose a project to begin.</p>
+        </div>
+
+        <div class="readout-actions">
+          <button type="button" id="downloadBtn" class="btn-primary" disabled>Download .sb3</button>
+          <div class="action-row">
+            <button type="button" id="runAgainBtn" class="btn-quiet" hidden>Run again</button>
+            <button type="button" id="cancelBtn" class="btn-quiet" hidden>Cancel</button>
+          </div>
+        </div>
+
+        <p class="proj-line" id="projStats"></p>
+
+        <div class="readout-foot">
+          <span>Engine: SB3 Full Compressor</span>
+          <span>v1.0</span>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <p>
+      <strong>SB3 Full Compressor</strong> · browser edition. Everything runs in
+      this tab; files are never uploaded.
+    </p>
+    <p class="footer-links">
+      <a href="https://github.com/PixelNest256/sb3-compressor" rel="noopener">GitHub repository ↗</a>
+      <span aria-hidden="true">/</span>
+      <span>MIT License</span>
+    </p>
+  </footer>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

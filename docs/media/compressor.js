@@ -1357,6 +1357,25 @@
       } catch (_) { /* keep original project.json on any parse trouble */ }
     }
 
+    if (opts.skipPackage) {
+      return {
+        container: "sb3",
+        entries: finalEntries,
+        projectBytes,
+        projectChanged,
+        origProjectSize: loaded.pjRaw.length,
+        origFileSize: asU8(buffer).length,
+        origMediaSize: inventory.mediaBytes,
+        newMediaSize: newMediaBytes,
+        mediaRatio: inventory.mediaBytes ? (1 - newMediaBytes / inventory.mediaBytes) * 100 : 0,
+        assetCount: targets.length,
+        changedCount: results.filter((r) => r.changed).length,
+        convertedCount: results.filter((r) => r.formatChanged).length,
+        results,
+        mix: mixOf(inventory.assets)
+      };
+    }
+
     report("package", 0.2, "Repacking .sb3...");
     const finalBytes = await packageSb3(finalEntries, projectBytes, report);
 
@@ -1398,6 +1417,8 @@
     scanEntries,
     compressBuffer,
     compressAssetBytes,
+    autoSetting,
+    presetFor,
     progressPercent,
     defaultOutputName,
     humanSize,

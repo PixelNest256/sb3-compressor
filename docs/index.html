@@ -139,7 +139,7 @@ h1 {
 .lead { max-width: 60ch; margin: 0; font-size: 17px; line-height: 1.55; color: var(--lead); }
 
 .cards {
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 26px; margin-top: 40px;
 }
 .card {
@@ -229,13 +229,13 @@ h1 {
 
   <main>
     <section class="intro">
-      <p class="eyebrow">Two browser tools for Scratch and TurboWarp files</p>
-      <h1>Compress the project.<br>Compress the media.</h1>
+      <p class="eyebrow">Browser tools for Scratch and TurboWarp files</p>
+      <h1>Compress the project,<br>the media, or both.</h1>
       <p class="lead">
-        Two independent tools for <code>.sb3</code> files. One slims the
-        <code>project.json</code> logic without changing behavior; the other
-        re-encodes costumes and sounds. Both run entirely in your browser —
-        no upload, no install.
+        Three independent tools for <code>.sb3</code> files. One slims the
+        <code>project.json</code> logic without changing behavior; one
+        re-encodes costumes and sounds; and one does both in a single pass. All
+        run entirely in your browser — no upload, no install.
       </p>
     </section>
 
@@ -281,6 +281,28 @@ h1 {
         <div class="actions">
           <a class="btn" href="media/">Open the tool</a>
           <a class="btn-quiet" href="media/ja/">日本語</a>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="card-full">
+        <div class="card-head">
+          <span class="card-glyph" aria-hidden="true">A-Z</span>
+          <h2 id="card-full">Full Compressor</h2>
+        </div>
+        <p class="card-sub">Project + media · one pass</p>
+        <p class="body">
+          Runs both passes on the same file: it compresses the costumes and
+          sounds, then shrinks <code>project.json</code>, and repacks the zip
+          once. The fastest way to shrink a project end to end.
+        </p>
+        <dl class="spec">
+          <div><dt>Reads</dt><dd>.sb3</dd></div>
+          <div><dt>Writes</dt><dd>*_full.sb3</dd></div>
+          <div><dt>Upload</dt><dd>none</dd></div>
+        </dl>
+        <div class="actions">
+          <a class="btn" href="full/">Open the tool</a>
+          <a class="btn-quiet" href="full/ja/">日本語</a>
         </div>
       </section>
     </div>

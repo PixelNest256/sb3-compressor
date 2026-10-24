@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SB3 Full Compressor — プロジェクトデータとメディアをまとめて圧縮</title>
+<meta name="description" content="Scratch / TurboWarp の .sb3 について、project.json の論理圧縮とコスチューム・音のメディア圧縮を一度に行い、1回で梱包し直します。すべてブラウザ内で完結し、アップロードはありません。">
+<meta name="theme-color" content="#e7e8e1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23171a16'/%3E%3Crect x='5' y='6' width='22' height='5' fill='%23e7e8e1'/%3E%3Crect x='5' y='13' width='8' height='13' fill='%23e14b12'/%3E%3Crect x='15' y='13' width='5' height='8' fill='%23e14b12'/%3E%3Crect x='22' y='13' width='5' height='13' fill='%23e7e8e1'/%3E%3C/svg%3E">
+<script>
+(function () {
+  var saved = null;
+  try { saved = localStorage.getItem("sb3-full-theme-v1"); } catch (e) {}
+  var dark = saved ? saved === "dark"
+    : !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  var meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", dark ? "#15180f" : "#e7e8e1");
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+JP:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">圧縮ツールへ移動</a>
+
+<div class="sheet">
+  <header class="masthead">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-name">SB3 Full Compressor</span>
+      <span class="brand-sub">プロジェクト＋メディア</span>
+    </div>
+    <div class="masthead-links">
+      <a class="tool-link" href="../../">ホーム</a>
+      <a class="tool-link" href="../../sb3/ja/">SB3</a>
+      <a class="tool-link" href="../../media/ja/">メディア</a>
+      <a class="lang-link" href="../" hreflang="en" lang="en">English</a>
+      <div class="theme-switch" role="group" aria-label="配色">
+        <button type="button" data-theme-set="light">ライト</button>
+        <button type="button" data-theme-set="dark">ダーク</button>
+      </div>
+      <span class="local-flag"><span class="dot" aria-hidden="true"></span>端末内のみ</span>
+    </div>
+  </header>
+
+  <main id="main" class="layout">
+    <div class="main-col">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">Scratch / TurboWarp のプロジェクトファイル向け</p>
+        <h1 id="page-title">まるごと圧縮。</h1>
+        <p class="lead">
+          <code>project.json</code> の論理圧縮と、コスチューム・音のメディア圧縮を
+          まとめて実行し、最後に1回だけ梱包し直します。すべてこのタブ内で完結し、
+          アップロードもインストールも要りません。
+        </p>
+        <dl class="spec">
+          <div><dt>読み込み</dt><dd>.sb3</dd></div>
+          <div><dt>書き出し</dt><dd>*_full.sb3</dd></div>
+          <div><dt>送信</dt><dd>なし</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel input-panel" aria-labelledby="input-title">
+        <div class="panel-head">
+          <h2 id="input-title">入力</h2>
+          <span class="head-rule" aria-hidden="true"></span>
+          <span class="panel-meta">.sb3</span>
+        </div>
+        <div id="dropzone" class="dropzone" role="button" tabindex="0"
+             aria-describedby="drop-hint" aria-label=".sb3 を選択">
+          <span class="corner tl" aria-hidden="true"></span>
+          <span class="corner tr" aria-hidden="true"></span>
+          <span class="corner bl" aria-hidden="true"></span>
+          <span class="corner br" aria-hidden="true"></span>
+          <span class="drop-glyph" aria-hidden="true">.sb3</span>
+          <p class="drop-title">プロジェクトをドロップ</p>
+          <p class="drop-hint" id="drop-hint">または <span class="linkish">ファイルを選択</span></p>
+        </div>
+        <input type="file" id="fileInput" class="visually-hidden" accept=".sb3,application/zip">
+        <div id="fileRow" class="file-row" hidden>
+          <div class="file-meta">
+            <span class="file-name" id="fileName">project.sb3</span>
+            <span class="file-size" id="fileSize">—</span>
+          </div>
+          <button type="button" id="clearBtn" class="text-btn">削除</button>
+        </div>
+        <p class="privacy">ファイルはこのタブ内で読み込まれます。サーバーには送信されません。</p>
+      </section>
+
+      <section class="panel options-panel" aria-labelledby="options-title">
+        <div class="panel-head">
+          <h2 id="options-title">オプション</h2>
+          <span class="head-rule" aria-hidden="true"></span>
+          <button type="button" id="resetOptions" class="text-btn">初期値に戻す</button>
+        </div>
+
+        <p class="options-note" style="margin-bottom:6px">プロジェクトデータ — <code>project.json</code> の圧縮（動作は保ちます）:</p>
+        <div class="opt-grid">
+          <fieldset class="opt-group">
+            <legend>容量を削る</legend>
+            <label class="opt"><input type="checkbox" checked data-popt="stripDefaults"><span>Scratch が復元する値を削除</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="removeUnused"><span>未使用の変数とリストを削除</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="clearInitialValues"><span>上書きされる初期値を空にする</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="dropObscuredShadows"><span>隠れた入力の既定値を削除</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="removeUnreachable"><span>実行されないコードを削除</span></label>
+          </fieldset>
+          <fieldset class="opt-group">
+            <legend>構造をまとめる</legend>
+            <label class="opt"><input type="checkbox" checked data-popt="extractDuplicates"><span>繰り返すコードを抽出</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="nearDuplicates"><span>似たコードをまとめる</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="loopDuplicates"><span>繰り返しをループにする</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="inlineSingleCall"><span>1回だけの定義を展開</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="removeNoops"><span>何もしないブロックを削除</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="simplifyIfElse"><span>空の if-else を if にする</span></label>
+          </fieldset>
+          <fieldset class="opt-group">
+            <legend>名前と定数</legend>
+            <label class="opt"><input type="checkbox" checked data-popt="shortenIds"><span>内部 ID を短縮</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="freqIds"><span>頻出ブロックを短い ID に</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="compressProcs"><span>カスタムブロック名を短縮</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="foldConstants"><span>定数計算を畳み込む</span></label>
+            <label class="opt"><input type="checkbox" checked data-popt="propagateConstants"><span>定数変数を値に置換</span></label>
+          </fieldset>
+        </div>
+
+        <label class="opt opt-warn">
+          <input type="checkbox" data-popt="clickToStage">
+          <span>スプライトのクリックをステージのクリックに書き換える</span>
+          <span class="tag">動作が変わります</span>
+        </label>
+
+        <div class="mode-block">
+          <div class="mode-head">
+            <p class="mode-desc">メディア — コスチュームと音は自動で再圧縮します。強さと追加項目を選んでください。</p>
+          </div>
+          <div class="strength" id="strengthWrap">
+            <span class="strength-label">強さ</span>
+            <div class="seg" role="group" aria-label="圧縮の強さ">
+              <button type="button" data-strength="light">弱</button>
+              <button type="button" data-strength="balanced" aria-pressed="true">標準</button>
+              <button type="button" data-strength="strong">強</button>
+            </div>
+          </div>
+          <div class="strength" id="autoExtra">
+            <span class="strength-label">追加</span>
+            <label class="opt opt-inline"><input type="checkbox" id="optPngOptimize"><span>PNG 無劣化圧縮（遅い・約10%小さく）</span></label>
+            <label class="opt opt-inline"><input type="checkbox" id="optWavMp3"><span>WAV を MP3 に変換</span></label>
+            <select id="wavMp3Bitrate" class="select select-inline" aria-label="WAV→MP3 ビットレート">
+              <option value="96" selected>96 kbps</option>
+              <option value="128">128 kbps</option>
+              <option value="64">64 kbps</option>
+            </select>
+            <label class="opt opt-inline"><input type="checkbox" id="optMp3Reenc"><span>MP3 を再エンコード</span></label>
+            <select id="mp3Bitrate" class="select select-inline" aria-label="MP3 ビットレート">
+              <option value="64">64 kbps</option>
+              <option value="96" selected>96 kbps</option>
+              <option value="128">128 kbps</option>
+            </select>
+            <p class="options-note auto-note">PNG 無劣化圧縮（OxiPNG）は PNG をわずかに小さくしますが、最も遅い工程です。既定ではオフです。</p>
+          </div>
+        </div>
+
+        <div class="lossy-note">
+          <span class="tag">元に戻せません</span>
+          <p>メディア圧縮は、あえて情報を捨てて容量を削ります。WAV を MP3 に変換すると <code>project.json</code> も書き換わります。元のファイルは必ず残してください。</p>
+        </div>
+
+        <div class="ledger" id="ledger" hidden>
+          <div class="ledger-summary">
+            <span id="ledgerSummary">—</span>
+            <button type="button" id="ledgerToggle" class="text-btn">一覧を隠す</button>
+          </div>
+          <div class="ledger-list" id="ledgerList"></div>
+        </div>
+      </section>
+
+      <section class="notes" aria-labelledby="notes-title">
+        <div class="panel-head">
+          <h2 id="notes-title">注意事項</h2>
+          <span class="head-rule" aria-hidden="true"></span>
+        </div>
+        <details>
+          <summary>処理の順番</summary>
+          <div class="notes-body">
+            <ul>
+              <li><strong>メディア圧縮</strong>でコスチュームと音を圧縮します（ワーカープールで並列処理）。</li>
+              <li>続いて<strong>プロジェクト圧縮</strong>で <code>project.json</code> を小さくします（未使用データ、到達しないコード、重複ブロック、短い ID など）。</li>
+              <li>最後に1回だけ梱包し直します。書き出しが小さくなる場合だけ差し替えます。</li>
+              <li>元のファイルは必ず残してください。メディア圧縮は不可逆で、元の名前には戻せません。</li>
+            </ul>
+            <p class="fine">
+              専用の <a href="../../sb3/ja/">SB3 圧縮</a> と <a href="../../media/ja/">メディア圧縮</a>
+              と同じ2つのエンジンを使っています。1件ずつ細かく指定したいときは、そちらを使ってください。
+            </p>
+          </div>
+        </details>
+      </section>
+    </div>
+
+    <aside class="side-col" aria-label="圧縮結果">
+      <section class="readout" aria-labelledby="readout-title">
+        <div class="readout-head">
+          <h2 id="readout-title">圧縮結果</h2>
+          <span class="stamp" aria-hidden="true">端末内<br>のみ</span>
+        </div>
+
+        <div class="size-pair">
+          <div class="size-row">
+            <span class="label">project.json</span>
+            <span class="value" id="jsonSizes">—</span>
+          </div>
+          <div class="size-row">
+            <span class="label">メディア</span>
+            <span class="value" id="mediaSizes">—</span>
+          </div>
+          <div class="size-row">
+            <span class="label">.sb3 ファイル</span>
+            <span class="value" id="fileSizes">—</span>
+          </div>
+        </div>
+
+        <div class="mix" id="mix" role="img" aria-label="まだ計測結果はありません">
+          <div class="mix-head"><span>メディア構成</span><span id="mixTotal">—</span></div>
+          <div class="mix-track" id="mixTrack">
+            <span class="mix-image" id="mixImage"></span>
+            <span class="mix-vector" id="mixVector"></span>
+            <span class="mix-audio" id="mixAudio"></span>
+          </div>
+          <div class="mix-legend">
+            <span><i class="k-image" aria-hidden="true"></i>画像</span>
+            <span><i class="k-vector" aria-hidden="true"></i>ベクター</span>
+            <span><i class="k-audio" aria-hidden="true"></i>音声</span>
+          </div>
+        </div>
+
+        <div class="figure">
+          <span class="figure-num" id="figureNum">0.0</span><span class="figure-unit">%</span>
+          <span class="figure-label" id="figureLabel">.sb3 ファイルの削減率</span>
+        </div>
+
+        <div class="run-state">
+          <div class="run-line">
+            <span id="phaseLabel" aria-live="polite">準備完了</span>
+            <span id="percentLabel">0%</span>
+          </div>
+          <div class="progress" id="progress" role="progressbar"
+               aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <span id="progressBar"></span>
+          </div>
+          <p class="run-message" id="runMessage">プロジェクトを選ぶと開始します。</p>
+        </div>
+
+        <div class="readout-actions">
+          <button type="button" id="downloadBtn" class="btn-primary" disabled>.sb3 をダウンロード</button>
+          <div class="action-row">
+            <button type="button" id="runAgainBtn" class="btn-quiet" hidden>もう一度</button>
+            <button type="button" id="cancelBtn" class="btn-quiet" hidden>中止</button>
+          </div>
+        </div>
+
+        <p class="proj-line" id="projStats"></p>
+
+        <div class="readout-foot">
+          <span>エンジン: SB3 Full Compressor</span>
+          <span>v1.0</span>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <p>
+      <strong>SB3 Full Compressor</strong> · ブラウザ版。すべてこのタブ内で処理され、
+      ファイルは送信されません。
+    </p>
+    <p class="footer-links">
+      <a href="https://github.com/PixelNest256/sb3-compressor" rel="noopener">GitHub リポジトリ ↗</a>
+      <span aria-hidden="true">/</span>
+      <span>MIT ライセンス</span>
+    </p>
+  </footer>
+</div>
+
+<script src="../app.js"></script>
+</body>
+</html>
