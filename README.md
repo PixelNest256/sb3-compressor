@@ -56,10 +56,15 @@ changing how the project behaves:
 Typical savings depend on the project, but JSON-heavy projects often shrink
 substantially with zero visual or behavioral difference in the editor.
 
+There are two ways to run it: the Python tool below, or the browser version in
+`docs/`, which needs no install and can be published with GitHub Pages.
+
 ## Requirements
 
 - Python 3.8 or later (standard library only)
 - Tkinter (bundled with standard CPython) — GUI mode only
+
+The browser version needs only a current browser; Python is not involved.
 
 ## Usage
 
@@ -102,6 +107,46 @@ Details: blocks renamed 8421 / variables 12 / lists 3 / broadcasts 5
 ```
 
 Progress and summary messages are written in English.
+
+### Browser version (no install)
+
+`docs/` contains a self-contained browser build of the same compressor. It has
+no build step and no server-side code: `index.html`, `styles.css`, `app.js`,
+`worker.js`, `compressor.js`, and a vendored copy of JSZip.
+
+1. Open the page.
+2. Drop an `.sb3` file (or a raw `project.json`) onto it, or choose one.
+3. Wait for the readout, then press **Download**.
+
+Compression runs in a Web Worker, and every option from the table below is
+available on the page. The file never leaves the tab; there is no upload and no
+Python/Pyodide in the browser. Cancelling a run terminates the worker; the
+in-tab fallback cannot be interrupted once compression starts.
+
+Serving the page over HTTP is recommended, because the Web Worker keeps the
+interface responsive while a project is compressed. Opening `docs/index.html`
+directly from disk also works: browsers block workers on `file://` URLs, so the
+page detects that and compresses in the main tab instead. The tab will pause
+until the readout appears.
+
+To preview locally:
+
+```console
+python -m http.server 8000 --directory docs
+```
+
+Then open <http://localhost:8000/>.
+
+To publish with GitHub Pages, push the repository and set
+**Settings → Pages → Deploy from a branch → `main` / `docs`**. The page is then
+served at `https://<user>.github.io/sb3-compressor/`. `docs/.nojekyll` keeps
+Jekyll from touching the directory.
+
+The browser engine is a direct port of `sb3_compressor.py`. On the optional
+`test.sb3` fixture it produces the same `project.json` size and the same
+statistics as the Python build; the two outputs are deep-equal apart from JSON
+key order. Zip entries other than `project.json` are copied verbatim, so
+costumes and sounds are unchanged.
 
 ### Tests
 
