@@ -195,6 +195,46 @@
     }
   }
 
+  // ---------------------------------------------------------------- theme
+
+  var THEME_KEY = "sb3-compressor-theme-v1";
+  var themeInputs = Array.prototype.slice.call(
+    document.querySelectorAll("button[data-theme-set]")
+  );
+
+  function currentTheme() {
+    return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  }
+
+  function setTheme(theme, persist) {
+    var dark = theme === "dark";
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", dark ? "#15180f" : "#e7e8e1");
+    themeInputs.forEach(function (button) {
+      button.setAttribute(
+        "aria-pressed",
+        String(button.getAttribute("data-theme-set") === (dark ? "dark" : "light"))
+      );
+    });
+    if (persist) {
+      try {
+        localStorage.setItem(THEME_KEY, dark ? "dark" : "light");
+      } catch (_) {
+        /* storage can be unavailable in private modes */
+      }
+    }
+  }
+
+  function storedTheme() {
+    try {
+      var value = localStorage.getItem(THEME_KEY);
+      return value === "dark" || value === "light" ? value : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   function setPhase(text) {
     el.phaseLabel.textContent = text;
   }
@@ -670,6 +710,12 @@
     input.addEventListener("change", markStale);
   });
 
+  themeInputs.forEach(function (button) {
+    button.addEventListener("click", function () {
+      setTheme(button.getAttribute("data-theme-set"), true);
+    });
+  });
+
   el.resetOptions.addEventListener("click", function () {
     applyOptions(DEFAULTS);
     saveOptions();
@@ -713,6 +759,19 @@
   });
 
   // --------------------------------------------------------------- boot
+
+  setTheme(currentTheme(), false);
+  var scheme = window.matchMedia
+    ? window.matchMedia("(prefers-color-scheme: dark)")
+    : null;
+  if (scheme) {
+    var onSchemeChange = function (event) {
+      if (storedTheme()) return;
+      setTheme(event.matches ? "dark" : "light", false);
+    };
+    if (scheme.addEventListener) scheme.addEventListener("change", onSchemeChange);
+    else if (scheme.addListener) scheme.addListener(onSchemeChange);
+  }
 
   applyOptions(mergedOptions());
   resetReadout();

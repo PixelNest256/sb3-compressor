@@ -129,6 +129,10 @@ directly from disk also works: browsers block workers on `file://` URLs, so the
 page detects that and compresses in the main tab instead. The tab will pause
 until the readout appears.
 
+The interface follows the operating system's light or dark preference by
+default. The **Light / Dark** switch in the header overrides it, and the choice
+is remembered in `localStorage`.
+
 To preview locally:
 
 ```console

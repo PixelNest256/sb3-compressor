@@ -2,6 +2,7 @@
    Palette: office paper, ink, one signal orange, one panel green-black. */
 
 :root {
+  color-scheme: light;
   --paper: #e7e8e1;
   --paper-2: #dcded4;
   --paper-3: #d0d2c6;
@@ -15,9 +16,43 @@
   --panel-rule: #3c4237;
   --panel-ink: #edece1;
   --panel-soft: #9aa092;
+  --lead: #33372e;
+  --notes: #353931;
+  --code-bg: rgba(23, 26, 22, 0.07);
+  --drop-border: #858878;
+  --drop-bg: rgba(255, 255, 255, 0.1);
+  --drop-bg-hover: rgba(23, 26, 22, 0.028);
+  --warn-bg: rgba(225, 75, 18, 0.055);
+  --gauge-ink: #171a16;
+  --on-signal: #171a16;
   --display: "Barlow Condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
   --body: "Barlow", "Segoe UI", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+/* Night shift: the job sheet goes dark, the readout stays a lit instrument. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #15180f;
+  --paper-2: #1d2117;
+  --paper-3: #0a0c07;
+  --ink: #e8e9dd;
+  --ink-soft: #a4aa99;
+  --rule: #4b5241;
+  --rule-light: #353b2d;
+  --signal: #ff6430;
+  --signal-dark: #ff9a70;
+  --panel: #20251b;
+  --panel-rule: #414837;
+  --panel-ink: #edece1;
+  --panel-soft: #9fa695;
+  --lead: #c9cdbf;
+  --notes: #c2c7b8;
+  --code-bg: rgba(232, 233, 221, 0.09);
+  --drop-border: #636b58;
+  --drop-bg: rgba(255, 255, 255, 0.014);
+  --drop-bg-hover: rgba(232, 233, 221, 0.045);
+  --warn-bg: rgba(255, 100, 48, 0.1);
 }
 
 *,
@@ -38,7 +73,7 @@ body {
 
 [hidden] { display: none !important; }
 
-::selection { background: var(--signal); color: var(--ink); }
+::selection { background: var(--signal); color: var(--on-signal); }
 
 a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 3px; }
 a:hover { color: var(--signal-dark); }
@@ -49,7 +84,7 @@ code {
   font-family: var(--mono);
   font-size: 0.88em;
   padding: 1px 4px;
-  background: rgba(23, 26, 22, 0.07);
+  background: var(--code-bg);
 }
 
 :focus-visible {
@@ -173,6 +208,34 @@ code {
   background: var(--signal);
 }
 
+.theme-switch {
+  display: inline-flex;
+  align-items: stretch;
+  gap: 1px;
+  padding: 1px;
+  border: 1px solid var(--ink);
+}
+.theme-switch button {
+  appearance: none;
+  border: 0;
+  border-radius: 0;
+  padding: 4px 7px;
+  background: transparent;
+  color: var(--ink-soft);
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 1.2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.theme-switch button:hover { color: var(--ink); }
+.theme-switch button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--paper);
+}
+.theme-switch button:focus-visible { outline: 2px solid var(--signal); outline-offset: 1px; }
+
 /* ------------------------------------------------------------ layout */
 
 .layout {
@@ -233,7 +296,7 @@ h1 {
   margin: 0;
   font-size: 17px;
   line-height: 1.52;
-  color: #33372e;
+  color: var(--lead);
 }
 
 .spec {
@@ -327,12 +390,12 @@ h1 {
   min-height: 188px;
   margin-top: 12px;
   padding: 24px;
-  border: 1px dashed #858878;
-  background: rgba(255, 255, 255, 0.1);
+  border: 1px dashed var(--drop-border);
+  background: var(--drop-bg);
   cursor: pointer;
   transition: border-color 120ms ease, background-color 120ms ease;
 }
-.dropzone:hover { border-color: var(--ink); background: rgba(23, 26, 22, 0.028); }
+.dropzone:hover { border-color: var(--ink); background: var(--drop-bg-hover); }
 .dropzone.is-dragging {
   border-color: var(--signal);
   border-style: solid;
@@ -490,7 +553,7 @@ h1 {
   margin-top: 18px;
   padding: 10px 12px;
   border: 1px solid rgba(225, 75, 18, 0.5);
-  background: rgba(225, 75, 18, 0.055);
+  background: var(--warn-bg);
   font-size: 13px;
 }
 .tag {
@@ -541,7 +604,7 @@ h1 {
   padding: 0 0 16px;
   font-size: 13px;
   line-height: 1.55;
-  color: #353931;
+  color: var(--notes);
 }
 .notes-body p { margin: 0 0 9px; }
 .notes-body ul { margin: 0 0 10px; padding-left: 17px; }
@@ -648,7 +711,7 @@ h1 {
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 600;
-  color: var(--ink);
+  color: var(--gauge-ink);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -777,7 +840,7 @@ h1 {
   border: 1px solid var(--signal-dark);
   border-radius: 0;
   background: var(--signal);
-  color: var(--ink);
+  color: var(--on-signal);
   font-family: var(--display);
   font-weight: 600;
   font-size: 18px;
@@ -881,6 +944,29 @@ h1 {
 .footer-links { display: flex; flex-wrap: wrap; gap: 4px 10px; }
 .footer-links a { color: var(--ink); }
 
+/* --------------------------------------------------- dark adjustments */
+
+:root[data-theme="dark"] .readout {
+  border-color: #424a36;
+  box-shadow: 7px 7px 0 var(--paper-3), inset 0 1px 0 rgba(237, 236, 225, 0.07);
+}
+
+:root[data-theme="dark"] .btn-primary { border-color: #c84412; }
+:root[data-theme="dark"] .btn-primary:hover:not(:disabled) { background: #ff7d4e; }
+:root[data-theme="dark"] .btn-primary:active:not(:disabled) { transform: translateY(1px); }
+:root[data-theme="dark"] .btn-primary:disabled { border-color: #4a5145; }
+
+:root[data-theme="dark"] .dropzone.is-dragging {
+  border-color: var(--signal);
+  background: rgba(255, 100, 48, 0.12);
+}
+
+:root[data-theme="dark"] .opt-warn { border-color: rgba(255, 100, 48, 0.55); }
+
+:root[data-theme="dark"] .readout-foot { color: #949c8a; }
+
+:root[data-theme="dark"] .stats-all dl { scrollbar-color: #4c5442 transparent; }
+
 /* --------------------------------------------------------- responsive */
 
 @media (max-width: 1020px) {
@@ -917,6 +1003,17 @@ h1 {
   .readout { padding: 15px 14px 12px; box-shadow: 4px 4px 0 var(--paper-3); }
   .figure-num { font-size: 46px; }
   .footer { margin-top: 34px; }
+}
+
+@media (max-width: 560px) {
+  .masthead { gap: 12px; }
+  .masthead-links { gap: 8px; }
+  .masthead-links > a { display: none; }
+  .brand-name { font-size: 21px; }
+}
+
+@media (max-width: 480px) {
+  .local-flag { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

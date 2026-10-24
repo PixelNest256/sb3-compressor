@@ -7,6 +7,19 @@
 <meta name="description" content="Shrink a Scratch or TurboWarp .sb3 project in your browser. Removes unused data and repeated code without changing how the project behaves. Nothing is uploaded.">
 <meta name="theme-color" content="#e7e8e1">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23171a16'/%3E%3Crect x='6' y='7' width='20' height='6' fill='%23e7e8e1'/%3E%3Crect x='6' y='16' width='11' height='9' fill='%23e14b12'/%3E%3Crect x='19' y='16' width='7' height='9' fill='%23565a4e'/%3E%3C/svg%3E">
+<script>
+/* Apply the saved theme before the stylesheet paints. */
+(function () {
+  var saved = null;
+  try { saved = localStorage.getItem("sb3-compressor-theme-v1"); } catch (e) {}
+  var dark = saved
+    ? saved === "dark"
+    : !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  var meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", dark ? "#15180f" : "#e7e8e1");
+})();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -23,6 +36,10 @@
       <span class="brand-sub">browser file utility</span>
     </div>
     <div class="masthead-links">
+      <div class="theme-switch" role="group" aria-label="Color theme">
+        <button type="button" data-theme-set="light">Light</button>
+        <button type="button" data-theme-set="dark">Dark</button>
+      </div>
       <span class="local-flag"><span class="dot" aria-hidden="true"></span>Local only</span>
       <a href="https://github.com/PixelNest256/sb3-compressor" rel="noopener">Source&nbsp;↗</a>
     </div>
