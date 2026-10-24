@@ -204,15 +204,25 @@
           <span class="stamp" aria-hidden="true">端末内<br>のみ</span>
         </div>
 
-        <div class="size-pair">
-          <div class="size-row">
-            <span class="label">メディア</span>
-            <span class="value" id="mediaSizes">—</span>
+        <div class="bars">
+          <div class="bar">
+            <div class="bar-top"><span class="bar-label">メディア</span><span class="bar-value" id="mediaSizes">—</span></div>
+            <div class="bar-track">
+              <div class="bar-kept" id="mediaKept"><span id="mediaKeptLabel">—</span></div>
+              <div class="bar-removed" id="mediaRemoved"></div>
+            </div>
           </div>
-          <div class="size-row">
-            <span class="label">.sb3 ファイル</span>
-            <span class="value" id="fileSizes">—</span>
+          <div class="bar">
+            <div class="bar-top"><span class="bar-label">.sb3 ファイル</span><span class="bar-value" id="fileSizes">—</span></div>
+            <div class="bar-track">
+              <div class="bar-kept" id="fileKept"><span id="fileKeptLabel">—</span></div>
+              <div class="bar-removed" id="fileRemoved"></div>
+            </div>
           </div>
+        </div>
+        <div class="bar-legend">
+          <span><i class="key kept" aria-hidden="true"></i>残存</span>
+          <span><i class="key removed" aria-hidden="true"></i>削減</span>
         </div>
 
         <div class="mix" id="mix" role="img" aria-label="まだ計測結果はありません">
@@ -253,6 +263,11 @@
             <button type="button" id="cancelBtn" class="btn-quiet" hidden>中止</button>
           </div>
         </div>
+
+        <details class="stats-all" id="statsDetails" hidden>
+          <summary>削減項目</summary>
+          <dl id="statsList"></dl>
+        </details>
 
         <div class="readout-foot">
           <span>エンジン: SB3 Media Compressor</span>

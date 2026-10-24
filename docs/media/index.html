@@ -206,15 +206,25 @@
           <span class="stamp" aria-hidden="true">Local<br>only</span>
         </div>
 
-        <div class="size-pair">
-          <div class="size-row">
-            <span class="label">media bytes</span>
-            <span class="value" id="mediaSizes">—</span>
+        <div class="bars">
+          <div class="bar">
+            <div class="bar-top"><span class="bar-label">media bytes</span><span class="bar-value" id="mediaSizes">—</span></div>
+            <div class="bar-track">
+              <div class="bar-kept" id="mediaKept"><span id="mediaKeptLabel">—</span></div>
+              <div class="bar-removed" id="mediaRemoved"></div>
+            </div>
           </div>
-          <div class="size-row">
-            <span class="label">.sb3 file</span>
-            <span class="value" id="fileSizes">—</span>
+          <div class="bar">
+            <div class="bar-top"><span class="bar-label">.sb3 file</span><span class="bar-value" id="fileSizes">—</span></div>
+            <div class="bar-track">
+              <div class="bar-kept" id="fileKept"><span id="fileKeptLabel">—</span></div>
+              <div class="bar-removed" id="fileRemoved"></div>
+            </div>
           </div>
+        </div>
+        <div class="bar-legend">
+          <span><i class="key kept" aria-hidden="true"></i>Kept</span>
+          <span><i class="key removed" aria-hidden="true"></i>Removed</span>
         </div>
 
         <div class="mix" id="mix" role="img" aria-label="No media measured yet">
@@ -255,6 +265,11 @@
             <button type="button" id="cancelBtn" class="btn-quiet" hidden>Cancel</button>
           </div>
         </div>
+
+        <details class="stats-all" id="statsDetails" hidden>
+          <summary>Reduction items</summary>
+          <dl id="statsList"></dl>
+        </details>
 
         <div class="readout-foot">
           <span>Engine: SB3 Media Compressor</span>

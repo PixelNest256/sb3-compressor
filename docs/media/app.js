@@ -58,6 +58,15 @@
       noGain: "no gain — kept",
       keptOriginal: "kept original",
       optionsReset: "Options reset.",
+      statsTitle: "Reduction items",
+      statMediaShrunk: "media assets shrunk",
+      statConverted: "sounds converted to MP3",
+      statKeptAsIs: "assets kept as-is",
+      statKind: {
+        png: "PNG costumes compressed", jpg: "JPEG costumes compressed",
+        svg: "SVG costumes optimised", wav: "WAV sounds compressed",
+        mp3: "MP3 sounds compressed", other: "other media compressed"
+      },
       threadsNote: "({n} parallel workers)",
       confirmManual: "Choose a project to list its media.",
       glyph: { image: "IMG", vector: "SVG", audio: "SND", wav: "WAV", mp3: "MP3" }
@@ -115,6 +124,15 @@
       noGain: "効果なし — そのまま",
       keptOriginal: "そのまま",
       optionsReset: "設定を初期値に戻しました。",
+      statsTitle: "削減項目",
+      statMediaShrunk: "圧縮したメディア",
+      statConverted: "MP3 に変換した音",
+      statKeptAsIs: "そのまま残したアセット",
+      statKind: {
+        png: "PNG コスチュームを圧縮", jpg: "JPEG コスチュームを圧縮",
+        svg: "SVG コスチュームを最適化", wav: "WAV 音声を圧縮",
+        mp3: "MP3 音声を圧縮", other: "その他メディアを圧縮"
+      },
       threadsNote: "（並列 {n}）",
       confirmManual: "プロジェクトを選ぶとメディアを一覧できます。",
       glyph: { image: "画像", vector: "SVG", audio: "音声", wav: "WAV", mp3: "MP3" }
@@ -168,6 +186,14 @@
     compressBtn: document.getElementById("compressBtn"),
     mediaSizes: document.getElementById("mediaSizes"),
     fileSizes: document.getElementById("fileSizes"),
+    mediaKept: document.getElementById("mediaKept"),
+    mediaKeptLabel: document.getElementById("mediaKeptLabel"),
+    mediaRemoved: document.getElementById("mediaRemoved"),
+    fileKept: document.getElementById("fileKept"),
+    fileKeptLabel: document.getElementById("fileKeptLabel"),
+    fileRemoved: document.getElementById("fileRemoved"),
+    statsDetails: document.getElementById("statsDetails"),
+    statsList: document.getElementById("statsList"),
     mix: document.getElementById("mix"),
     mixTotal: document.getElementById("mixTotal"),
     mixImage: document.getElementById("mixImage"),
@@ -649,9 +675,59 @@
     }));
   }
 
+  function setBar(keptEl, keptLabelEl, removedEl, ratio) {
+    var r = Number(ratio) || 0;
+    var removed = Math.max(0, Math.min(100, r));
+    var kept = Math.max(0, Math.min(100, 100 - r));
+    if (keptEl) keptEl.style.width = kept + "%";
+    if (removedEl) removedEl.style.width = removed + "%";
+    if (keptLabelEl) keptLabelEl.textContent = Math.round(kept) + "%";
+  }
+  function resetBars() {
+    [[el.mediaKept, el.mediaKeptLabel, el.mediaRemoved],
+     [el.fileKept, el.fileKeptLabel, el.fileRemoved]].forEach(function (t) {
+      if (t[0]) t[0].style.width = "100%";
+      if (t[2]) t[2].style.width = "0%";
+      if (t[1]) t[1].textContent = "—";
+    });
+  }
+  function statRow(label, value) {
+    var row = document.createElement("div");
+    var dt = document.createElement("dt");
+    dt.textContent = label;
+    var dd = document.createElement("dd");
+    dd.textContent = Number(value).toLocaleString("en-US");
+    row.appendChild(dt);
+    row.appendChild(dd);
+    return row;
+  }
+  function renderStats(data) {
+    if (!el.statsList) return;
+    el.statsList.textContent = "";
+    var added = 0;
+    if (data.changedCount) { el.statsList.appendChild(statRow(L.statMediaShrunk, data.changedCount)); added++; }
+    if (data.convertedCount) { el.statsList.appendChild(statRow(L.statConverted, data.convertedCount)); added++; }
+    var keptAsIs = (data.assetCount || 0) - (data.changedCount || 0);
+    if (keptAsIs > 0) { el.statsList.appendChild(statRow(L.statKeptAsIs, keptAsIs)); added++; }
+    var kinds = {};
+    (data.results || []).forEach(function (r) {
+      if (!r.changed) return;
+      var k = r.ext === "jpeg" ? "jpg" : r.ext;
+      if (!L.statKind[k]) k = "other";
+      kinds[k] = (kinds[k] || 0) + 1;
+    });
+    Object.keys(L.statKind).forEach(function (k) {
+      if (kinds[k]) { el.statsList.appendChild(statRow(L.statKind[k], kinds[k])); added++; }
+    });
+    el.statsDetails.hidden = added === 0;
+  }
+
   function resetReadout() {
     el.mediaSizes.textContent = "—";
     el.fileSizes.textContent = "—";
+    resetBars();
+    if (el.statsDetails) el.statsDetails.hidden = true;
+    if (el.statsList) el.statsList.textContent = "";
     el.figureNum.textContent = "0.0";
     el.figureLabel.textContent = L.smaller;
     el.downloadBtn.disabled = true;
@@ -999,6 +1075,9 @@
 
     el.mediaSizes.textContent = humanSize(data.origMediaSize) + "  →  " + humanSize(data.newMediaSize);
     el.fileSizes.textContent = humanSize(data.origFileSize) + "  →  " + humanSize(data.newFileSize);
+    setBar(el.mediaKept, el.mediaKeptLabel, el.mediaRemoved, data.mediaRatio);
+    setBar(el.fileKept, el.fileKeptLabel, el.fileRemoved, data.fileRatio);
+    renderStats(data);
     renderMix({ mix: data.mix || (scan && scan.mix) || { image: 0, vector: 0, audio: 0 } });
 
     el.downloadBtn.disabled = false;

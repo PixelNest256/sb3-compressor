@@ -1424,3 +1424,71 @@ html[lang="ja"] .footer { font-size: 10px; line-height: 1.7; }
   color: var(--panel-soft);
 }
 .readout .proj-line:empty { display: none; }
+
+/* --------------------------------------------------- kept / removed bars */
+
+.bars { display: grid; gap: 10px; margin-top: 13px; }
+.bar-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+.bar-label {
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--panel-soft);
+}
+.bar-value {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.bar-track {
+  display: flex;
+  height: 16px;
+  margin-top: 4px;
+  overflow: hidden;
+  border: 1px solid #6c7364;
+  background: #2a2f27;
+}
+.bar-kept {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  width: 100%;
+  padding-left: 6px;
+  overflow: hidden;
+  background: #d7d9cb;
+  transition: width 420ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.bar-kept span {
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 600;
+  color: var(--gauge-ink);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.bar-removed {
+  width: 0;
+  background-color: var(--signal);
+  background-image: repeating-linear-gradient(
+    135deg, rgba(23, 26, 22, 0.32) 0 2px, transparent 2px 7px);
+  transition: width 420ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.bar-legend {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--panel-soft);
+}
+.bar-legend span { display: inline-flex; align-items: center; gap: 5px; }

@@ -50,7 +50,58 @@
       optionsReset: "Options reset.",
       threadsNote: "({n} parallel workers)",
       projectLine: "project.json {from} → {to}",
-      mediaLine: "media {from} → {to}"
+      mediaLine: "media {from} → {to}",
+      statsTitle: "Reduction items",
+      statMediaShrunk: "media assets shrunk",
+      statConverted: "sounds converted to MP3",
+      statKeptAsIs: "assets kept as-is",
+      statKind: {
+        png: "PNG costumes compressed", jpg: "JPEG costumes compressed",
+        svg: "SVG costumes optimised", wav: "WAV sounds compressed",
+        mp3: "MP3 sounds compressed", other: "other media compressed"
+      },
+      stats: {
+        blocks_renamed: "block IDs renamed",
+        vars_renamed: "variables renamed",
+        lists_renamed: "lists renamed",
+        broadcasts_renamed: "broadcasts renamed",
+        fields_removed: "default fields removed",
+        monitors_updated: "monitors updated",
+        click_rewrites: "click hats rewritten",
+        vars_removed: "unused variables removed",
+        lists_removed: "unused lists removed",
+        procs_renamed: "custom blocks shortened",
+        args_renamed: "arguments renamed",
+        obscured_shadows_removed: "hidden defaults removed",
+        unreachable_blocks_removed: "unreachable blocks removed",
+        unreachable_comments_removed: "unreachable comments removed",
+        broadcasts_removed: "unused broadcasts removed",
+        procs_removed: "unused definitions removed",
+        vars_initialized: "variable starting values blanked",
+        lists_initialized: "list starting values blanked",
+        duplicates_extracted: "duplicate groups extracted",
+        dup_blocks_saved: "blocks saved by duplicates",
+        near_duplicates_extracted: "near-duplicate groups extracted",
+        near_blocks_saved: "blocks saved by near-duplicates",
+        ifelse_converted: "if-else blocks simplified",
+        noop_procs_removed: "do-nothing definitions removed",
+        noop_calls_removed: "do-nothing calls removed",
+        noop_receivers_removed: "do-nothing receivers removed",
+        noop_broadcasts_removed: "dead broadcasts removed",
+        noop_messages_removed: "dead messages removed",
+        procs_inlined: "single-use definitions inlined",
+        const_values_folded: "constant expressions folded",
+        loops_created: "repeat loops created",
+        loop_blocks_saved: "blocks saved by loops",
+        const_vars_inlined: "constant variables inlined",
+        const_reads_inlined: "constant reads replaced",
+        arg_ids_shortened: "argument IDs shortened",
+        mutation_keys_removed: "mutation keys removed",
+        monitors_removed: "monitors removed",
+        comments_removed: "comments removed",
+        workspace_compacted: "workspace re-flowed",
+        float_values_rounded: "rounded values"
+      }
     },
     ja: {
       phases: {
@@ -97,7 +148,58 @@
       optionsReset: "設定を初期値に戻しました。",
       threadsNote: "（並列 {n}）",
       projectLine: "project.json {from} → {to}",
-      mediaLine: "メディア {from} → {to}"
+      mediaLine: "メディア {from} → {to}",
+      statsTitle: "削減項目",
+      statMediaShrunk: "圧縮したメディア",
+      statConverted: "MP3 に変換した音",
+      statKeptAsIs: "そのまま残したアセット",
+      statKind: {
+        png: "PNG コスチュームを圧縮", jpg: "JPEG コスチュームを圧縮",
+        svg: "SVG コスチュームを最適化", wav: "WAV 音声を圧縮",
+        mp3: "MP3 音声を圧縮", other: "その他メディアを圧縮"
+      },
+      stats: {
+        blocks_renamed: "ブロック ID を短縮",
+        vars_renamed: "変数名を短縮",
+        lists_renamed: "リスト名を短縮",
+        broadcasts_renamed: "ブロードキャスト名を短縮",
+        fields_removed: "既定フィールドを削除",
+        monitors_updated: "モニターを更新",
+        click_rewrites: "クリックの書き換え",
+        vars_removed: "未使用の変数を削除",
+        lists_removed: "未使用のリストを削除",
+        procs_renamed: "カスタムブロック名を短縮",
+        args_renamed: "引数名を短縮",
+        obscured_shadows_removed: "隠れた既定値を削除",
+        unreachable_blocks_removed: "到達しないブロックを削除",
+        unreachable_comments_removed: "到達しないコメントを削除",
+        broadcasts_removed: "未使用のブロードキャストを削除",
+        procs_removed: "未使用の定義を削除",
+        vars_initialized: "変数の初期値を空に",
+        lists_initialized: "リストの初期値を空に",
+        duplicates_extracted: "重複したコードを抽出",
+        dup_blocks_saved: "重複で削減したブロック",
+        near_duplicates_extracted: "似たコードを統合",
+        near_blocks_saved: "似たコードで削減したブロック",
+        ifelse_converted: "if-else を if に",
+        noop_procs_removed: "何もしない定義を削除",
+        noop_calls_removed: "何もしない呼び出しを削除",
+        noop_receivers_removed: "何もしない受信を削除",
+        noop_broadcasts_removed: "不要なブロードキャストを削除",
+        noop_messages_removed: "不要なメッセージを削除",
+        procs_inlined: "1回だけの定義を展開",
+        const_values_folded: "定数計算を畳み込み",
+        loops_created: "repeat ループを作成",
+        loop_blocks_saved: "ループで削減したブロック",
+        const_vars_inlined: "定数変数を値に置換",
+        const_reads_inlined: "定数の参照を置換",
+        arg_ids_shortened: "引数 ID を短縮",
+        mutation_keys_removed: "mutation キーを削除",
+        monitors_removed: "モニターを削除",
+        comments_removed: "コメントを削除",
+        workspace_compacted: "ワークスペースを再配置",
+        float_values_rounded: "小数を丸め"
+      }
     }
   };
 
@@ -144,6 +246,17 @@
     jsonSizes: document.getElementById("jsonSizes"),
     mediaSizes: document.getElementById("mediaSizes"),
     fileSizes: document.getElementById("fileSizes"),
+    jsonKept: document.getElementById("jsonKept"),
+    jsonKeptLabel: document.getElementById("jsonKeptLabel"),
+    jsonRemoved: document.getElementById("jsonRemoved"),
+    mediaKept: document.getElementById("mediaKept"),
+    mediaKeptLabel: document.getElementById("mediaKeptLabel"),
+    mediaRemoved: document.getElementById("mediaRemoved"),
+    fileKept: document.getElementById("fileKept"),
+    fileKeptLabel: document.getElementById("fileKeptLabel"),
+    fileRemoved: document.getElementById("fileRemoved"),
+    statsDetails: document.getElementById("statsDetails"),
+    statsList: document.getElementById("statsList"),
     mix: document.getElementById("mix"),
     mixTotal: document.getElementById("mixTotal"),
     mixImage: document.getElementById("mixImage"),
@@ -296,10 +409,66 @@
     el.mix.setAttribute("aria-label", fmt(L.mixAria, { image: pi.toFixed(0), vector: pv.toFixed(0), audio: pa.toFixed(0) }));
   }
 
+  function setBar(keptEl, keptLabelEl, removedEl, ratio) {
+    var r = Number(ratio) || 0;
+    var removed = Math.max(0, Math.min(100, r));
+    var kept = Math.max(0, Math.min(100, 100 - r));
+    if (keptEl) keptEl.style.width = kept + "%";
+    if (removedEl) removedEl.style.width = removed + "%";
+    if (keptLabelEl) keptLabelEl.textContent = Math.round(kept) + "%";
+  }
+  function resetBars() {
+    [[el.jsonKept, el.jsonKeptLabel, el.jsonRemoved],
+     [el.mediaKept, el.mediaKeptLabel, el.mediaRemoved],
+     [el.fileKept, el.fileKeptLabel, el.fileRemoved]].forEach(function (t) {
+      if (t[0]) t[0].style.width = "100%";
+      if (t[2]) t[2].style.width = "0%";
+      if (t[1]) t[1].textContent = "—";
+    });
+  }
+  function statRow(label, value) {
+    var row = document.createElement("div");
+    var dt = document.createElement("dt");
+    dt.textContent = label;
+    var dd = document.createElement("dd");
+    dd.textContent = Number(value).toLocaleString("en-US");
+    row.appendChild(dt);
+    row.appendChild(dd);
+    return row;
+  }
+  function renderStats(data) {
+    if (!el.statsList) return;
+    el.statsList.textContent = "";
+    var added = 0;
+    if (data.changedCount) { el.statsList.appendChild(statRow(L.statMediaShrunk, data.changedCount)); added++; }
+    if (data.convertedCount) { el.statsList.appendChild(statRow(L.statConverted, data.convertedCount)); added++; }
+    var keptAsIs = (data.assetCount || 0) - (data.changedCount || 0);
+    if (keptAsIs > 0) { el.statsList.appendChild(statRow(L.statKeptAsIs, keptAsIs)); added++; }
+    var kinds = {};
+    (data.results || []).forEach(function (r) {
+      if (!r.changed) return;
+      var k = r.ext === "jpeg" ? "jpg" : r.ext;
+      if (!L.statKind[k]) k = "other";
+      kinds[k] = (kinds[k] || 0) + 1;
+    });
+    Object.keys(L.statKind).forEach(function (k) {
+      if (kinds[k]) { el.statsList.appendChild(statRow(L.statKind[k], kinds[k])); added++; }
+    });
+    var ps = data.projectStats || {};
+    Object.keys(L.stats).forEach(function (key) {
+      var v = Number(ps[key] || 0);
+      if (v > 0) { el.statsList.appendChild(statRow(L.stats[key], v)); added++; }
+    });
+    el.statsDetails.hidden = added === 0;
+  }
+
   function resetReadout() {
     el.jsonSizes.textContent = "—";
     el.mediaSizes.textContent = "—";
     el.fileSizes.textContent = "—";
+    resetBars();
+    if (el.statsDetails) el.statsDetails.hidden = true;
+    if (el.statsList) el.statsList.textContent = "";
     el.figureNum.textContent = "0.0";
     el.figureLabel.textContent = L.smallerFile;
     el.downloadBtn.disabled = true;
@@ -624,6 +793,10 @@
     el.jsonSizes.textContent = humanSize(data.origJsonSize) + "  →  " + humanSize(data.newJsonSize);
     el.mediaSizes.textContent = humanSize(data.origMediaSize) + "  →  " + humanSize(data.newMediaSize);
     el.fileSizes.textContent = humanSize(data.origFileSize) + "  →  " + humanSize(data.newFileSize);
+    setBar(el.jsonKept, el.jsonKeptLabel, el.jsonRemoved, data.jsonRatio);
+    setBar(el.mediaKept, el.mediaKeptLabel, el.mediaRemoved, data.mediaRatio);
+    setBar(el.fileKept, el.fileKeptLabel, el.fileRemoved, data.fileRatio);
+    renderStats(data);
     renderMix(data);
 
     if (el.projStats) el.projStats.textContent = projectSummary(data.projectStats);
