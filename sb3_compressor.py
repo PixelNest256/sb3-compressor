@@ -4,7 +4,17 @@
 
 Python port of the Scratch project "sb3 Compressor".
   - Rename block IDs and variable/list/broadcast names to short IDs
-  - Remove unused variables and lists
+  - Remove variables/lists that are never displayed, written, or read
+  - Blank initial values that are always overwritten before the first read
+  - Remove unreachable blocks/comments, unused definitions and broadcasts
+  - Drop input defaults hidden under covering reporter blocks
+  - Fold numeric-only reporter expressions (JavaScript number semantics)
+  - Inline single-use non-warp definitions and drop no-op definitions/messages
+  - Turn empty if/else blocks into plain if blocks
+  - Replace consecutive identical block groups with repeat loops
+  - Propagate variables that never change into their read sites
+  - Extract repeated code into custom-block definitions
+  - Extract near-duplicate blocks whose only differences are literals
   - Shorten custom block proccodes and argument names
   - Remove default-valued fields that the VM reconstructs
   - Minify JSON and repack the .sb3 with its assets unchanged
@@ -19,6 +29,7 @@ from __future__ import annotations
 import copy
 import io
 import json
+import math
 import os
 import queue
 import re
@@ -57,8 +68,19 @@ SENSING_STACK_OPS = {"sensing_askandwait", "sensing_setdragmode",
 EXTRACT_EXCLUDE_OPS = {
     "procedures_definition", "procedures_prototype",
     "argument_reporter_string_number", "argument_reporter_boolean",
-    "control_stop",
+    "control_stop", "procedures_return",
 }
+# Blocks that make a candidate unextractable even when they are only part of
+# a larger chain.  Argument reporters are handled separately: they can be
+# turned into parameters of the generated custom block.
+EXTRACT_FORBIDDEN_OPS = {
+    "procedures_definition", "procedures_prototype", "control_stop",
+    "procedures_return",
+}
+# Primitive input types that hold literal text/numbers.  A difference in one
+# of these slots can be passed through a custom-block argument and therefore
+# can be shared by a near-duplicate definition.
+LITERAL_PRIMITIVE_TYPES = {4, 5, 6, 7, 8, 10}
 
 
 # Built-in properties handled by sensing_of before its variable-name lookup.
@@ -89,6 +111,29 @@ def encode_id(n: int) -> str:
     return out
 
 
+def proccode_placeholders(code: str) -> list[str]:
+    """Return the ``%s``/``%b`` placeholders of a custom-block proccode.
+
+    Renaming a proccode must keep every placeholder, otherwise the prototype
+    declares arguments that the label does not contain and Scratch can no
+    longer bind the block's input slots.  ``%%`` is an escaped literal percent.
+    """
+    out = []
+    i = 0
+    while i < len(code):
+        if code[i] == "%" and i + 1 < len(code):
+            nxt = code[i + 1]
+            if nxt == "%":
+                i += 2
+                continue
+            if nxt in ("s", "b"):
+                out.append("%" + nxt)
+                i += 2
+                continue
+        i += 1
+    return out
+
+
 def loose_eq(a, b) -> bool:
     if isinstance(a, bool) or isinstance(b, bool):
         return isinstance(a, bool) and isinstance(b, bool) and a == b
@@ -98,6 +143,143 @@ def loose_eq(a, b) -> bool:
         return float(a) == float(b)
     except (TypeError, ValueError):
         return str(a) == str(b)
+
+
+def js_to_number(value) -> float:
+    """Approximate Scratch's ``Cast.toNumber`` (JavaScript ``Number``).
+
+    Anything JavaScript turns into ``NaN`` becomes ``0`` here, exactly like
+    the VM.  Unlike Python's ``float``, ``Number`` does not accept ``inf``,
+    ``nan`` or underscore separators, so those are rejected explicitly.
+    """
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        try:
+            out = float(value)
+        except (TypeError, OverflowError):
+            return 0.0
+        return 0.0 if math.isnan(out) else out
+    try:
+        text = str(value).strip()
+    except Exception:
+        return 0.0
+    if not text:
+        return 0.0
+    if text in ("Infinity", "+Infinity"):
+        return float("inf")
+    if text == "-Infinity":
+        return float("-inf")
+    low = text.lower()
+    if "nan" in low or "inf" in low or "_" in text:
+        return 0.0
+    if len(text) > 2 and text[0] == "0" and text[1].lower() in "xob":
+        try:
+            return float(int(text, 0))
+        except (ValueError, OverflowError):
+            return 0.0
+    try:
+        out = float(text)
+    except (ValueError, OverflowError):
+        return 0.0
+    return 0.0 if math.isnan(out) else out
+
+
+def js_number_str(value: float) -> str | None:
+    """Serialize a number the way JavaScript would, preserving -0/Infinity."""
+    if isinstance(value, bool):
+        value = float(value)
+    if not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    if math.isnan(value):
+        return None
+    if math.isinf(value):
+        return "Infinity" if value > 0 else "-Infinity"
+    if value == 0.0:
+        return "-0" if math.copysign(1.0, value) < 0 else "0"
+    candidates = []
+    try:
+        candidates.append(str(int(value)))
+    except (ValueError, OverflowError):
+        pass
+    candidates.append(repr(value))
+    best = None
+    for text in candidates:
+        if text.endswith(".0"):
+            text = text[:-2]
+        # Shorten exponents ("1e-07" -> "1e-7"); both parse identically.
+        text = re.sub(r"e([+-])0+(\d)", r"e\1\2", text)
+        try:
+            parsed = float(text)
+        except (ValueError, OverflowError):
+            continue
+        if parsed != value or math.copysign(1.0, parsed) != math.copysign(1.0, value):
+            continue
+        if best is None or len(text) < len(best):
+            best = text
+    return best
+
+
+def js_round(value: float) -> float:
+    """JavaScript ``Math.round`` (ties go towards +Infinity, -0 preserved)."""
+    value = float(value)
+    if math.isnan(value) or math.isinf(value):
+        return value
+    result = math.floor(value + 0.5)
+    if result == 0 and math.copysign(1.0, value) < 0:
+        return -0.0
+    return float(result)
+
+
+def js_floor(value: float) -> float:
+    value = float(value)
+    if math.isnan(value) or math.isinf(value):
+        return value
+    result = math.floor(value)
+    if result == 0 and math.copysign(1.0, value) < 0:
+        return -0.0
+    return float(result)
+
+
+def js_ceil(value: float) -> float:
+    value = float(value)
+    if math.isnan(value) or math.isinf(value):
+        return value
+    result = math.ceil(value)
+    if result == 0 and math.copysign(1.0, value) < 0:
+        return -0.0
+    return float(result)
+
+
+def js_divide(left: float, right: float) -> float:
+    """JavaScript division: no exception, ``x/0`` becomes ±Infinity/NaN."""
+    try:
+        return left / right
+    except ZeroDivisionError:
+        if left == 0 or math.isnan(left):
+            return float("nan")
+        sign = math.copysign(1.0, left) * math.copysign(1.0, right)
+        return float("inf") if sign > 0 else float("-inf")
+    except OverflowError:
+        sign = math.copysign(1.0, left) * math.copysign(1.0, right)
+        return float("inf") if sign > 0 else float("-inf")
+
+
+def js_mod(left: float, right: float) -> float:
+    """Scratch's ``mod`` (JavaScript remainder, then floored to the divisor)."""
+    try:
+        result = math.fmod(left, right)
+    except (ValueError, ZeroDivisionError):
+        return float("nan")
+    if math.isnan(result):
+        return result
+    try:
+        if result / right < 0:
+            result += right
+    except ZeroDivisionError:
+        pass
+    return result
 
 
 def human_size(n: float) -> str:
@@ -143,7 +325,14 @@ class Options:
                  drop_obscured_shadows: bool = True,
                  remove_unreachable: bool = True,
                  clear_initial_values: bool = True,
-                 extract_duplicates: bool = True):
+                 extract_duplicates: bool = True,
+                 near_duplicates: bool = True,
+                 simplify_if_else: bool = True,
+                 remove_noops: bool = True,
+                 inline_single_call: bool = True,
+                 fold_constants: bool = True,
+                 loop_duplicates: bool = True,
+                 propagate_constants: bool = True):
         self.strip_defaults = strip_defaults
         self.shorten_ids = shorten_ids
         self.click_to_stage = click_to_stage
@@ -154,6 +343,13 @@ class Options:
         self.remove_unreachable = remove_unreachable
         self.clear_initial_values = clear_initial_values
         self.extract_duplicates = extract_duplicates
+        self.near_duplicates = near_duplicates
+        self.simplify_if_else = simplify_if_else
+        self.remove_noops = remove_noops
+        self.inline_single_call = inline_single_call
+        self.fold_constants = fold_constants
+        self.loop_duplicates = loop_duplicates
+        self.propagate_constants = propagate_constants
 
 
 def default_output_path(in_path: str) -> str:
@@ -192,6 +388,20 @@ class Compressor:
             "lists_initialized": 0,
             "duplicates_extracted": 0,
             "dup_blocks_saved": 0,
+            "near_duplicates_extracted": 0,
+            "near_blocks_saved": 0,
+            "ifelse_converted": 0,
+            "noop_procs_removed": 0,
+            "noop_calls_removed": 0,
+            "noop_receivers_removed": 0,
+            "noop_broadcasts_removed": 0,
+            "noop_messages_removed": 0,
+            "procs_inlined": 0,
+            "const_values_folded": 0,
+            "loops_created": 0,
+            "loop_blocks_saved": 0,
+            "const_vars_inlined": 0,
+            "const_reads_inlined": 0,
         }
         self.var_map: dict = {}
         self.list_map: dict = {}
@@ -253,6 +463,14 @@ class Compressor:
         if self.options.clear_initial_values:
             self.progress("collect", 1.0, "Analyzing initial values...")
             self._clear_initial_values(targets)
+
+        if (self.options.simplify_if_else or self.options.remove_noops
+                or self.options.inline_single_call
+                or self.options.fold_constants
+                or self.options.loop_duplicates
+                or self.options.propagate_constants):
+            self.progress("collect", 1.0, "Simplifying scripts...")
+            self._simplify_project(project)
 
         if self.options.shorten_ids:
             self._rename_stores(targets)
@@ -334,6 +552,8 @@ class Compressor:
         standalone_v: set = set()
         standalone_l: set = set()
         sensed_v: set = set()
+        unknown_read_v: set = set()
+        unknown_read_l: set = set()
 
         def mark(kind, pid, name):
             used = used_v if kind == "v" else used_l
@@ -356,9 +576,11 @@ class Compressor:
             if pid in self.var_map:
                 used_v.add(pid)
                 read_v.add(pid)
+                unknown_read_v.add(pid)
             elif pid in self.list_map:
                 used_l.add(pid)
                 read_l.add(pid)
+                unknown_read_l.add(pid)
 
         def mark_read(kind, pid, name):
             table = self.var_map if kind == "v" else self.list_map
@@ -523,6 +745,8 @@ class Compressor:
         self._standalone_var_ids = standalone_v
         self._standalone_list_ids = standalone_l
         self._sensed_var_ids = sensed_v
+        self._unknown_read_var_ids = unknown_read_v
+        self._unknown_read_list_ids = unknown_read_l
         self._display_var_ids = visible_v | show_v | standalone_v
         self._display_list_ids = visible_l | show_l | standalone_l
 
@@ -763,8 +987,14 @@ class Compressor:
             if isinstance(comments, dict):
                 out = {}
                 for cid, c in comments.items():
-                    if (isinstance(c, dict) and isinstance(c.get("blockId"), str)
-                            and c["blockId"] in kept):
+                    if not isinstance(c, dict):
+                        continue
+                    anchor = c.get("blockId")
+                    # A comment with no block anchor is a free workspace note;
+                    # it is not part of any script and is kept as user data.
+                    if anchor is None or not isinstance(anchor, str):
+                        out[cid] = c
+                    elif anchor in kept:
                         out[cid] = c
                 st["unreachable_comments_removed"] += len(comments) - len(out)
                 tgt["comments"] = out
@@ -1029,8 +1259,12 @@ class Compressor:
                     return False
                 if sid in self._display_var_ids:
                     return False
+                if sid in self._unknown_read_var_ids:
+                    return False
             else:
                 if sid in self._display_list_ids:
+                    return False
+                if sid in self._unknown_read_list_ids:
                     return False
             return True
 
@@ -1160,6 +1394,10 @@ class Compressor:
         id_map = {}
         if isinstance(blocks, dict) and blocks and o.extract_duplicates:
             self._extract_duplicates(blocks)
+        if isinstance(blocks, dict) and blocks and o.near_duplicates:
+            self._extract_near_duplicates(blocks)
+        if isinstance(blocks, dict) and blocks:
+            self._normalize_parent_markers(blocks)
         if o.compress_procs and isinstance(blocks, dict) and blocks:
             self._compress_procs(blocks)
         if isinstance(blocks, dict) and o.shorten_ids and blocks:
@@ -1180,8 +1418,12 @@ class Compressor:
         if isinstance(final_blocks, dict) and isinstance(comments, dict):
             out = {}
             for cid, c in comments.items():
-                if (isinstance(c, dict) and isinstance(c.get("blockId"), str)
-                        and c["blockId"] in final_blocks):
+                if not isinstance(c, dict):
+                    continue
+                anchor = c.get("blockId")
+                if anchor is None or not isinstance(anchor, str):
+                    out[cid] = c
+                elif anchor in final_blocks:
                     out[cid] = c
             tgt["comments"] = out
 
@@ -1233,40 +1475,1150 @@ class Compressor:
                     stack.append((nxt, True))
         return out
 
+    def _simplify_project(self, project: dict) -> None:
+        """Run the cheap structural passes before duplicate extraction."""
+        targets = project.get("targets") or []
+        o = self.options
+        if o.simplify_if_else:
+            for tgt in targets:
+                blocks = tgt.get("blocks") if isinstance(tgt, dict) else None
+                if isinstance(blocks, dict) and blocks:
+                    self._simplify_if_else(blocks)
+        if o.remove_noops:
+            # Definitions first: removing their calls can empty a broadcast
+            # receiver, which the message pass then recognizes as a no-op.
+            for tgt in targets:
+                blocks = tgt.get("blocks") if isinstance(tgt, dict) else None
+                if isinstance(blocks, dict) and blocks:
+                    self._remove_noop_procedures(blocks)
+            self._remove_noop_broadcasts(project)
+        if o.inline_single_call:
+            for tgt in targets:
+                blocks = tgt.get("blocks") if isinstance(tgt, dict) else None
+                if isinstance(blocks, dict) and blocks:
+                    self._inline_single_call_procs(blocks)
+        if o.propagate_constants:
+            self._propagate_constants(targets, project.get("monitors"))
+        if o.fold_constants:
+            for tgt in targets:
+                blocks = tgt.get("blocks") if isinstance(tgt, dict) else None
+                if isinstance(blocks, dict) and blocks:
+                    self._fold_numeric(blocks)
+        if o.loop_duplicates:
+            for tgt in targets:
+                blocks = tgt.get("blocks") if isinstance(tgt, dict) else None
+                if isinstance(blocks, dict) and blocks:
+                    self._loopize_consecutive(blocks)
+
+    def _simplify_if_else(self, blocks: dict) -> None:
+        """Use ``if`` when an ``if/else`` has no else branch."""
+        st = self.stats
+        for blk in blocks.values():
+            if not isinstance(blk, dict) or blk.get("opcode") != "control_if_else":
+                continue
+            inputs = blk.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            branch = inputs.get("SUBSTACK2")
+            empty = branch is None
+            if isinstance(branch, list):
+                if len(branch) < 2 or branch[1] is None:
+                    empty = True
+                elif isinstance(branch[1], str) and branch[1] not in blocks:
+                    empty = True
+            if not empty:
+                continue
+            inputs.pop("SUBSTACK2", None)
+            blk["opcode"] = "control_if"
+            st["ifelse_converted"] += 1
+
+    # ------------------------------------------------------------------
+    def _chain_is_noop(self, blocks: dict, first) -> bool:
+        """True when a stack body is empty or only ``stop this script``."""
+        if not isinstance(first, str) or first not in blocks:
+            return True
+        ids = self._chain_ids(blocks, first, 100000)
+        if not ids:
+            return True
+        for bid in ids:
+            blk = blocks.get(bid)
+            if not isinstance(blk, dict) or blk.get("opcode") != "control_stop":
+                return False
+            fv = (blk.get("fields") or {}).get("STOP_OPTION")
+            if not (isinstance(fv, list) and fv and fv[0] == "this script"):
+                return False
+        return True
+
+    def _splice_out(self, blocks: dict, bid) -> bool:
+        """Remove a stack block and reconnect its predecessor and successor."""
+        blk = blocks.get(bid)
+        if not isinstance(blk, dict):
+            return False
+        nxt = blk.get("next")
+        nxt = nxt if isinstance(nxt, str) and nxt in blocks else None
+        parent_id = blk.get("parent")
+        parent = blocks.get(parent_id) if isinstance(parent_id, str) else None
+        linked = False
+        if isinstance(parent, dict):
+            if parent.get("next") == bid:
+                parent["next"] = nxt
+                linked = True
+            inputs = parent.get("inputs")
+            if isinstance(inputs, dict):
+                for value in inputs.values():
+                    if isinstance(value, list) and len(value) > 1 and value[1] == bid:
+                        value[1] = nxt
+                        linked = True
+            if not linked:
+                parent_id = None
+        if not linked:
+            # A loose/top-level stack: promote the continuation in place.
+            if nxt is not None:
+                nb = blocks.get(nxt)
+                if isinstance(nb, dict):
+                    nb["parent"] = None
+                    nb["topLevel"] = True
+                    if "x" in blk:
+                        nb["x"] = blk["x"]
+                    if "y" in blk:
+                        nb["y"] = blk["y"]
+        else:
+            if nxt is not None:
+                nb = blocks.get(nxt)
+                if isinstance(nb, dict):
+                    nb["parent"] = parent_id
+        for x in self._collect_subgraph(blocks, bid, False):
+            blocks.pop(x, None)
+        return True
+
+    def _remove_noop_procedures(self, blocks: dict) -> None:
+        """Drop definitions that do nothing, together with their calls."""
+        st = self.stats
+        for _ in range(200):
+            protos = {bid: b for bid, b in blocks.items()
+                      if isinstance(b, dict)
+                      and b.get("opcode") == "procedures_prototype"}
+            defs = []
+            calls = {}
+            for bid, b in blocks.items():
+                if not isinstance(b, dict):
+                    continue
+                op = b.get("opcode")
+                if op == "procedures_call":
+                    code = (b.get("mutation") or {}).get("proccode")
+                    calls.setdefault(code, []).append(bid)
+            code_count = {}
+            for bid, b in blocks.items():
+                if not isinstance(b, dict) or b.get("opcode") != "procedures_definition":
+                    continue
+                cb = (b.get("inputs") or {}).get("custom_block")
+                pid = cb[1] if isinstance(cb, list) and len(cb) > 1 else None
+                proto = blocks.get(pid) if isinstance(pid, str) else None
+                mut = (proto or {}).get("mutation") or {}
+                code = mut.get("proccode")
+                if not isinstance(code, str):
+                    continue
+                code_count[code] = code_count.get(code, 0) + 1
+                defs.append((bid, pid, code))
+            targets = []
+            for hat, pid, code in defs:
+                if code_count.get(code, 0) != 1:
+                    # Ambiguous proccode: a call cannot be bound reliably.
+                    continue
+                body = blocks[hat].get("next")
+                if self._chain_is_noop(blocks, body):
+                    targets.append((hat, pid, code, body))
+            if not targets:
+                break
+            for hat, pid, code, body in targets:
+                for cid in list(calls.get(code, [])):
+                    if cid in blocks and self._splice_out(blocks, cid):
+                        st["noop_calls_removed"] += 1
+                if isinstance(body, str) and body in blocks:
+                    for x in self._collect_subgraph(blocks, body, True):
+                        blocks.pop(x, None)
+                blocks.pop(hat, None)
+                if isinstance(pid, str):
+                    blocks.pop(pid, None)
+                st["noop_procs_removed"] += 1
+
+    def _remove_noop_broadcasts(self, project: dict) -> None:
+        """Drop empty broadcast receivers and sends that can never run code."""
+        st = self.stats
+        targets = project.get("targets") or []
+
+        defs = {}
+        for tgt in targets:
+            if not isinstance(tgt, dict):
+                continue
+            for bid, ent in (tgt.get("broadcasts") or {}).items():
+                name = ent[0] if isinstance(ent, list) and ent else ent
+                defs[bid] = name
+
+        def message_key(name, mid):
+            if isinstance(mid, str) and mid in defs:
+                return mid
+            return name
+
+        effective = set()
+        noop_receivers = []
+        for tgt in targets:
+            if not isinstance(tgt, dict):
+                continue
+            blocks = tgt.get("blocks")
+            if not isinstance(blocks, dict):
+                continue
+            for bid, blk in blocks.items():
+                if not isinstance(blk, dict) \
+                        or blk.get("opcode") != "event_whenbroadcastreceived":
+                    continue
+                fv = (blk.get("fields") or {}).get("BROADCAST_OPTION")
+                if not isinstance(fv, list) or not fv:
+                    continue
+                name = fv[0] if isinstance(fv[0], str) else None
+                mid = fv[1] if len(fv) > 1 and isinstance(fv[1], str) else None
+                if self._chain_is_noop(blocks, blk.get("next")):
+                    noop_receivers.append((blocks, bid))
+                else:
+                    effective.add(message_key(name, mid))
+
+        for blocks, hat_id in noop_receivers:
+            for x in self._collect_subgraph(blocks, hat_id, True):
+                blocks.pop(x, None)
+            st["noop_receivers_removed"] += 1
+
+        sends = []
+        for tgt in targets:
+            if not isinstance(tgt, dict):
+                continue
+            blocks = tgt.get("blocks")
+            if not isinstance(blocks, dict):
+                continue
+            for bid, blk in blocks.items():
+                if not isinstance(blk, dict) \
+                        or blk.get("opcode") not in ("event_broadcast",
+                                                     "event_broadcastandwait"):
+                    continue
+                name = mid = None
+                inp = (blk.get("inputs") or {}).get("BROADCAST_INPUT")
+                if isinstance(inp, list) and len(inp) > 1 and isinstance(inp[1], list):
+                    arr = inp[1]
+                    if len(arr) > 1 and isinstance(arr[1], str):
+                        name = arr[1]
+                    if len(arr) > 2 and isinstance(arr[2], str):
+                        mid = arr[2]
+                if message_key(name, mid) not in effective:
+                    sends.append((blocks, bid))
+        for blocks, bid in sends:
+            if self._splice_out(blocks, bid):
+                st["noop_broadcasts_removed"] += 1
+
+        # Recompute which message definitions are still referenced.
+        used = set()
+        for tgt in targets:
+            if not isinstance(tgt, dict):
+                continue
+            for blk in (tgt.get("blocks") or {}).values():
+                if not isinstance(blk, dict):
+                    continue
+                fv = (blk.get("fields") or {}).get("BROADCAST_OPTION")
+                if isinstance(fv, list) and fv:
+                    if isinstance(fv[0], str):
+                        used.add(fv[0])
+                    if len(fv) > 1 and isinstance(fv[1], str):
+                        used.add(fv[1])
+                if blk.get("opcode") in ("event_broadcast",
+                                         "event_broadcastandwait"):
+                    inp = (blk.get("inputs") or {}).get("BROADCAST_INPUT")
+                    if isinstance(inp, list) and len(inp) > 1 \
+                            and isinstance(inp[1], list):
+                        arr = inp[1]
+                        if len(arr) > 1 and isinstance(arr[1], str):
+                            used.add(arr[1])
+                        if len(arr) > 2 and isinstance(arr[2], str):
+                            used.add(arr[2])
+        for tgt in targets:
+            if not isinstance(tgt, dict):
+                continue
+            bc = tgt.get("broadcasts")
+            if not isinstance(bc, dict):
+                continue
+            out = {}
+            for bid, ent in bc.items():
+                name = ent[0] if isinstance(ent, list) and ent else ent
+                if bid in used or (isinstance(name, str) and name in used):
+                    out[bid] = ent
+            removed = len(bc) - len(out)
+            if removed:
+                st["noop_messages_removed"] += removed
+                tgt["broadcasts"] = out
+
+    def _contains_this_script_stop(self, blocks: dict, start) -> bool:
+        if not isinstance(start, str) or start not in blocks:
+            return False
+        for bid in self._collect_subgraph(blocks, start, True):
+            blk = blocks.get(bid)
+            if not isinstance(blk, dict) or blk.get("opcode") != "control_stop":
+                continue
+            fv = (blk.get("fields") or {}).get("STOP_OPTION")
+            if isinstance(fv, list) and fv and fv[0] == "this script":
+                return True
+        return False
+
+    def _enclosing_definition_is_warp(self, blocks: dict, block_id) -> bool:
+        seen = set()
+        cur = blocks.get(block_id) if isinstance(block_id, str) else None
+        while isinstance(cur, dict):
+            parent = cur.get("parent")
+            if not isinstance(parent, str) or parent in seen or parent not in blocks:
+                return False
+            seen.add(parent)
+            blk = blocks.get(parent)
+            if not isinstance(blk, dict):
+                return False
+            if blk.get("opcode") == "procedures_definition":
+                cb = (blk.get("inputs") or {}).get("custom_block")
+                pid = cb[1] if isinstance(cb, list) and len(cb) > 1 else None
+                proto = blocks.get(pid) if isinstance(pid, str) else None
+                mut = (proto or {}).get("mutation") or {}
+                return str(mut.get("warp")) == "true"
+            cur = blk
+        return False
+
+    def _inline_single_call_procs(self, blocks: dict) -> None:
+        """Move a non-warp definition used exactly once to its call site."""
+        st = self.stats
+        while True:
+            protos = {bid: b for bid, b in blocks.items()
+                      if isinstance(b, dict)
+                      and b.get("opcode") == "procedures_prototype"}
+            defs = []
+            calls = {}
+            for bid, b in blocks.items():
+                if not isinstance(b, dict):
+                    continue
+                if b.get("opcode") == "procedures_call":
+                    code = (b.get("mutation") or {}).get("proccode")
+                    calls.setdefault(code, []).append(bid)
+                elif b.get("opcode") == "procedures_definition":
+                    cb = (b.get("inputs") or {}).get("custom_block")
+                    pid = cb[1] if isinstance(cb, list) and len(cb) > 1 else None
+                    proto = blocks.get(pid) if isinstance(pid, str) else None
+                    mut = (proto or {}).get("mutation") or {}
+                    defs.append((bid, pid, mut.get("proccode"), mut))
+            code_count = {}
+            for _hat, _pid, code, _mut in defs:
+                if isinstance(code, str):
+                    code_count[code] = code_count.get(code, 0) + 1
+
+            done = False
+            for hat, pid, code, mut in defs:
+                if not isinstance(code, str) or code_count.get(code, 0) != 1:
+                    continue
+                if str(mut.get("warp")) == "true":
+                    continue
+                try:
+                    arg_ids = json.loads(mut.get("argumentids") or "[]")
+                except (TypeError, ValueError):
+                    arg_ids = []
+                if arg_ids:
+                    continue
+                ids = calls.get(code, [])
+                if len(ids) != 1:
+                    continue
+                body = blocks[hat].get("next")
+                if not isinstance(body, str) or body not in blocks:
+                    continue
+                if self._contains_this_script_stop(blocks, body):
+                    continue
+                has_arg_reporter = False
+                for x in self._collect_subgraph(blocks, body, True):
+                    xb = blocks.get(x)
+                    if isinstance(xb, dict) and str(xb.get("opcode", "")).startswith(
+                            "argument_reporter"):
+                        has_arg_reporter = True
+                        break
+                if has_arg_reporter:
+                    continue
+                call_id = ids[0]
+                call = blocks.get(call_id)
+                if not isinstance(call, dict):
+                    continue
+                parent_id = call.get("parent")
+                if not isinstance(parent_id, str) or parent_id not in blocks:
+                    continue
+                if self._enclosing_definition_is_warp(blocks, parent_id):
+                    continue
+                parent = blocks[parent_id]
+                replaced = False
+                if parent.get("next") == call_id:
+                    parent["next"] = body
+                    replaced = True
+                inputs = parent.get("inputs")
+                if isinstance(inputs, dict):
+                    for value in inputs.values():
+                        if isinstance(value, list) and len(value) > 1 \
+                                and value[1] == call_id:
+                            value[1] = body
+                            replaced = True
+                if not replaced:
+                    continue
+                chain = self._chain_ids(blocks, body, 1000000)
+                if not chain:
+                    continue
+                last = chain[-1]
+                call_next = call.get("next")
+                call_next = call_next if isinstance(call_next, str) else None
+                blocks[body]["parent"] = parent_id
+                blocks[last]["next"] = call_next
+                if call_next is not None and call_next in blocks:
+                    blocks[call_next]["parent"] = last
+                for x in self._collect_subgraph(blocks, call_id, False):
+                    blocks.pop(x, None)
+                blocks.pop(hat, None)
+                if isinstance(pid, str):
+                    blocks.pop(pid, None)
+                st["procs_inlined"] += 1
+                done = True
+                break
+            if not done:
+                break
+
+    # ------------------------------------------------------------------
+    def _literal_number(self, entry):
+        """Read a numeric literal from an SB3 input entry, or None for a block."""
+        if not isinstance(entry, list) or len(entry) < 2:
+            return 0.0
+        item = entry[1]
+        if isinstance(item, list):
+            if not item:
+                return 0.0
+            if len(item) >= 2 and item[0] in (4, 5, 6, 7, 8, 10):
+                return js_to_number(item[1])
+            return None
+        if isinstance(item, str):
+            return None
+        if item is None:
+            return 0.0
+        return js_to_number(item)
+
+    def _eval_foldable(self, blk: dict):
+        """Evaluate an all-literal numeric reporter, or return None."""
+        op = blk.get("opcode")
+        inputs = blk.get("inputs") or {}
+        if op in ("operator_add", "operator_subtract", "operator_multiply",
+                  "operator_divide", "operator_mod"):
+            # Ignore blocks that do not use the standard numeric inputs at
+            # all (malformed or extension-made): missing recognised inputs
+            # would otherwise look like "0 + 0" and delete real reporters.
+            if "NUM1" not in inputs and "NUM2" not in inputs:
+                return None
+            left = self._literal_number(inputs.get("NUM1"))
+            right = self._literal_number(inputs.get("NUM2"))
+            if left is None or right is None:
+                return None
+            try:
+                if op == "operator_add":
+                    return left + right
+                if op == "operator_subtract":
+                    return left - right
+                if op == "operator_multiply":
+                    return left * right
+                if op == "operator_divide":
+                    return js_divide(left, right)
+                return js_mod(left, right)
+            except OverflowError:
+                return float("inf")
+        if op == "operator_round":
+            if "NUM" not in inputs:
+                return None
+            value = self._literal_number(inputs.get("NUM"))
+            return None if value is None else js_round(value)
+        if op == "operator_mathop":
+            if "NUM" not in inputs:
+                return None
+            value = self._literal_number(inputs.get("NUM"))
+            if value is None:
+                return None
+            fv = (blk.get("fields") or {}).get("OPERATOR")
+            name = fv[0] if isinstance(fv, list) and fv else None
+            if name == "abs":
+                return abs(value)
+            if name == "floor":
+                return js_floor(value)
+            if name == "ceiling":
+                return js_ceil(value)
+            if name == "sqrt":
+                try:
+                    return math.sqrt(value)
+                except ValueError:
+                    return float("nan")
+            # Transcendental functions are intentionally not folded: their
+            # last-bit results can differ between JavaScript and Python.
+            return None
+        return None
+
+    def _fold_numeric(self, blocks: dict) -> None:
+        """Replace numeric-only reporter trees with their computed literal."""
+        st = self.stats
+        foldable = {"operator_add", "operator_subtract", "operator_multiply",
+                    "operator_divide", "operator_mod", "operator_round",
+                    "operator_mathop"}
+        refs = {}
+        for blk in blocks.values():
+            if not isinstance(blk, dict):
+                continue
+            for value in (blk.get("inputs") or {}).values():
+                if not isinstance(value, list):
+                    continue
+                for item in value[1:]:
+                    if isinstance(item, str):
+                        refs[item] = refs.get(item, 0) + 1
+        for _ in range(100000):
+            changed = False
+            for pid, parent in list(blocks.items()):
+                if not isinstance(parent, dict):
+                    continue
+                inputs = parent.get("inputs")
+                if not isinstance(inputs, dict):
+                    continue
+                for key, entry in list(inputs.items()):
+                    if (not isinstance(entry, list) or len(entry) < 2
+                            or not isinstance(entry[1], str)
+                            or key.startswith("SUBSTACK")):
+                        continue
+                    cid = entry[1]
+                    child = blocks.get(cid)
+                    if not isinstance(child, dict):
+                        continue
+                    if child.get("opcode") not in foldable:
+                        continue
+                    if child.get("topLevel") is True:
+                        continue
+                    if child.get("parent") not in (pid, None):
+                        continue
+                    if refs.get(cid, 0) != 1:
+                        continue
+                    value = self._eval_foldable(child)
+                    if value is None or math.isnan(value):
+                        continue
+                    text = js_number_str(value)
+                    if text is None or len(text) > 64:
+                        continue
+                    inputs[key] = [1, [4, text]]
+                    for x in self._collect_subgraph(blocks, cid, False):
+                        blocks.pop(x, None)
+                        refs.pop(x, None)
+                    st["const_values_folded"] += 1
+                    changed = True
+                    break
+                if changed:
+                    break
+            if not changed:
+                break
+
+    # ------------------------------------------------------------------
+    def _canonical_block(self, blocks: dict, bid, cache: dict,
+                         include_next: bool = False, stack=frozenset()):
+        key = (bid, include_next)
+        if key in cache:
+            return cache[key]
+        if bid in stack:
+            return ("cycle",)
+        blk = blocks.get(bid)
+        if isinstance(blk, list):
+            value = ("prim", self._freeze(blk))
+            cache[key] = value
+            return value
+        if not isinstance(blk, dict):
+            return ("missing",)
+        nstack = stack | {bid}
+        fields = tuple(sorted((k, self._freeze(v))
+                              for k, v in (blk.get("fields") or {}).items()))
+        inputs = []
+        for k, value in sorted((blk.get("inputs") or {}).items()):
+            if not isinstance(value, list):
+                inputs.append((k, ("value", self._freeze(value))))
+                continue
+            items = []
+            for item in value:
+                if isinstance(item, str) and item in blocks:
+                    items.append(("ref", self._canonical_block(
+                        blocks, item, cache, True, nstack)))
+                elif isinstance(item, list):
+                    items.append(("list", self._freeze(item)))
+                else:
+                    items.append(("value", item))
+            inputs.append((k, tuple(items)))
+        value = (blk.get("opcode"), fields, tuple(inputs),
+                 self._freeze(blk.get("mutation") or {}),
+                 bool(blk.get("shadow")))
+        if include_next:
+            nxt = blk.get("next")
+            nval = (self._canonical_block(blocks, nxt, cache, True, nstack)
+                    if isinstance(nxt, str) and nxt in blocks else None)
+            value = value + (nval,)
+        cache[key] = value
+        return value
+
+    @staticmethod
+    def _freeze(value):
+        if isinstance(value, dict):
+            return tuple(sorted((str(k), Compressor._freeze(v))
+                                for k, v in value.items()))
+        if isinstance(value, list):
+            return tuple(Compressor._freeze(v) for v in value)
+        return value
+
+    def _loopize_consecutive(self, blocks: dict) -> None:
+        """Turn consecutive identical groups into a ``repeat`` block."""
+        st = self.stats
+        if not isinstance(blocks, dict) or len(blocks) < 3:
+            return
+        for _ in range(200):
+            cache = {}
+            next_targets = set()
+            for blk in blocks.values():
+                if isinstance(blk, dict) and isinstance(blk.get("next"), str):
+                    next_targets.add(blk["next"])
+            starts = [bid for bid in blocks
+                      if bid not in next_targets and isinstance(blocks[bid], dict)]
+            best = None
+            for start in starts:
+                if self._is_hat_opcode(blocks[start].get("opcode")):
+                    chain = self._chain_ids(blocks, start, 100000)
+                    if not chain:
+                        continue
+                    first_index = 1
+                else:
+                    chain = self._chain_ids(blocks, start, 100000)
+                    first_index = 0
+                    if blocks[start].get("topLevel") is True:
+                        first_index = 1
+                if len(chain) - first_index < 2:
+                    continue
+                keys = [self._canonical_block(blocks, bid, cache, False)
+                        for bid in chain]
+                limit = min(40, len(chain))
+                for i in range(first_index, len(chain) - 1):
+                    max_l = min(limit, (len(chain) - i) // 2)
+                    for length in range(1, max_l + 1):
+                        count = 1
+                        while i + (count + 1) * length <= len(chain):
+                            ok = True
+                            for j in range(length):
+                                if keys[i + count * length + j] != keys[i + j]:
+                                    ok = False
+                                    break
+                            if not ok:
+                                break
+                            count += 1
+                        if count < 2:
+                            continue
+                        removed = set()
+                        for k in range(1, count):
+                            for bid in chain[i + k * length:
+                                            i + (k + 1) * length]:
+                                removed |= self._collect_subgraph(blocks, bid, False)
+                        removed -= set(chain[i:i + length])
+                        saved = len(removed)
+                        if saved < 2:
+                            continue
+                        score = (saved, length, count)
+                        if best is None or score > best[0]:
+                            best = (score, chain, i, length, count, removed)
+            if best is None:
+                return
+            _score, chain, i, length, count, removed = best
+            saved = _score[0]
+            first = chain[i]
+            last_first_unit = chain[i + length - 1]
+            last = chain[i + length * count - 1]
+            parent_id = blocks[first].get("parent")
+            if not isinstance(parent_id, str) or parent_id not in blocks:
+                return
+            cont = blocks[last].get("next")
+            cont = cont if isinstance(cont, str) and cont in blocks else None
+            before = copy.deepcopy(blocks)
+            rid = "L1"
+            n = 1
+            while rid in blocks:
+                n += 1
+                rid = f"L{n}"
+            rep = {
+                "opcode": "control_repeat",
+                "next": cont,
+                "parent": parent_id,
+                "inputs": {
+                    "TIMES": [1, [6, str(count)]],
+                    "SUBSTACK": [2, first],
+                },
+                "fields": {},
+                "shadow": False,
+                "topLevel": False,
+            }
+            blocks[rid] = rep
+            blocks[first]["parent"] = rid
+            blocks[last_first_unit]["next"] = None
+            parent = blocks[parent_id]
+            if parent.get("next") == first:
+                parent["next"] = rid
+            else:
+                for value in (parent.get("inputs") or {}).values():
+                    if isinstance(value, list) and len(value) > 1 \
+                            and value[1] == first:
+                        value[1] = rid
+            if cont is not None:
+                blocks[cont]["parent"] = rid
+            for bid in removed:
+                blocks.pop(bid, None)
+            old_size = len(json.dumps(before, ensure_ascii=False,
+                                      separators=(",", ":")))
+            new_size = len(json.dumps(blocks, ensure_ascii=False,
+                                      separators=(",", ":")))
+            if new_size >= old_size:
+                blocks.clear()
+                blocks.update(before)
+                return
+            st["loops_created"] += 1
+            st["loop_blocks_saved"] += saved
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _value_literal(value):
+        """Return ``(primitive_type, text)`` for a stored variable value."""
+        if isinstance(value, bool):
+            # Booleans are not representable as a Scratch variable literal.
+            return None
+        if isinstance(value, (int, float)):
+            text = js_number_str(value)
+            return None if text is None else (4, text)
+        if isinstance(value, str):
+            return (10, value)
+        return None
+
+    @staticmethod
+    def _set_literal(blk: dict):
+        """Read the literal written by ``set variable to``, or None."""
+        entry = (blk.get("inputs") or {}).get("VALUE")
+        if not isinstance(entry, list) or len(entry) < 2:
+            return None
+        item = entry[1]
+        if not isinstance(item, list) or not item:
+            return None
+        kind = item[0]
+        if kind in (4, 5, 6, 7, 8):
+            text = item[1] if len(item) > 1 else "0"
+            return (4, str(text))
+        if kind == 10:
+            text = item[1] if len(item) > 1 else ""
+            return (10, str(text))
+        return None
+
+    def _propagate_constants(self, targets, monitors=None) -> None:
+        """Replace reads of variables whose value can never change.
+
+        Two cases are handled:
+
+        * a variable that is never written: every read sees its saved value;
+        * a variable whose every write stores the same literal: reads that
+          follow such a write in the same script see that literal.  All writes
+          store the same value, so once a script has written it the variable
+          can never hold anything else again, which makes the dominance
+          analysis monotone and safe even across loops.
+
+        Displayed, sensed, cloud, monitored, and extension-touched stores are
+        left alone, and a replacement is applied only when the serialized
+        project actually shrinks.
+        """
+        st = self.stats
+        store = {}
+        for tgt in targets:
+            if not isinstance(tgt, dict):
+                continue
+            variables = tgt.get("variables")
+            if not isinstance(variables, dict):
+                continue
+            for vid, ent in variables.items():
+                if isinstance(ent, list) and ent:
+                    name = ent[0]
+                    value = ent[1] if len(ent) > 1 else ""
+                else:
+                    name, value = str(ent), ""
+                store[vid] = (tgt, name, value)
+        if not store:
+            return
+
+        def jlen(value) -> int:
+            return len(json.dumps(value, ensure_ascii=False,
+                                  separators=(",", ":")))
+
+        bad = set(self.var_cloud_ids)
+        bad |= self._display_var_ids
+        bad |= self._sensed_var_ids
+        bad |= self._unknown_read_var_ids
+        for mon in monitors or []:
+            if not isinstance(mon, dict) or mon.get("opcode") != "data_variable":
+                continue
+            mid = mon.get("id")
+            if isinstance(mid, str) and mid in store:
+                bad.add(mid)
+            pname = (mon.get("params") or {}).get("VARIABLE")
+            if isinstance(pname, str):
+                bad |= set(self.var_name_ids.get(pname, set()))
+
+        def ref_vid(arr):
+            if not isinstance(arr, list) or not arr or arr[0] != 12:
+                return None
+            pid = arr[2] if len(arr) > 2 else None
+            if isinstance(pid, str) and pid in store:
+                return pid
+            name = arr[1] if len(arr) > 1 else None
+            if isinstance(name, str):
+                ids = self.var_name_ids.get(name)
+                if ids and len(ids) == 1:
+                    vid = next(iter(ids))
+                    if vid in store:
+                        return vid
+            return None
+
+        def block_vid(blk):
+            fv = (blk.get("fields") or {}).get("VARIABLE")
+            if not isinstance(fv, list) or not fv:
+                return None
+            fid = fv[1] if len(fv) > 1 else None
+            if isinstance(fid, str) and fid in store:
+                return fid
+            name = fv[0]
+            if isinstance(name, str):
+                ids = self.var_name_ids.get(name)
+                if ids and len(ids) == 1:
+                    vid = next(iter(ids))
+                    if vid in store:
+                        return vid
+            return None
+
+        blocks_by_tgt = []
+        for tgt in targets:
+            blocks = tgt.get("blocks") if isinstance(tgt, dict) else None
+            blocks_by_tgt.append(blocks if isinstance(blocks, dict) else {})
+
+        # Find every write so a single unusual write disables the variable.
+        writes = {}
+        for blocks in blocks_by_tgt:
+            for blk in blocks.values():
+                if not isinstance(blk, dict):
+                    continue
+                fv = (blk.get("fields") or {}).get("VARIABLE")
+                if not isinstance(fv, list) or not fv:
+                    continue
+                op = blk.get("opcode")
+                fid = fv[1] if len(fv) > 1 else None
+                if isinstance(fid, str) and fid in store:
+                    ids = {fid}
+                else:
+                    ids = set(self.var_name_ids.get(fv[0], set())) & set(store)
+                if not ids:
+                    continue
+                if op == "data_setvariableto":
+                    pair = self._set_literal(blk)
+                    if pair is None:
+                        bad |= ids
+                    else:
+                        for vid in ids:
+                            writes.setdefault(vid, []).append(pair)
+                elif op in VAR_WRITE_OPS:
+                    bad |= ids
+                elif op in ("data_variable", "data_showvariable",
+                            "data_hidevariable"):
+                    pass
+                else:
+                    # Unknown extension block using a VARIABLE field: it may
+                    # write, so leave the store alone.
+                    bad |= ids
+
+        always = {}
+        dominated = {}
+        for vid, (_tgt, _name, value) in store.items():
+            if vid in bad:
+                continue
+            init = self._value_literal(value)
+            ws = writes.get(vid)
+            if ws is None:
+                if init is not None:
+                    always[vid] = init
+                continue
+            if not ws:
+                continue
+            first = ws[0]
+            if any(w != first for w in ws):
+                continue
+            if init is not None and init == first:
+                always[vid] = first
+            else:
+                # Reads before the first write still see the saved value, so
+                # only script-order dominated reads may be replaced.
+                dominated[vid] = first
+
+        if not always and not dominated:
+            return
+
+        # Count references so a store can be dropped once all reads are gone.
+        ref_count = {}
+
+        def count_refs(node):
+            if isinstance(node, list):
+                if node and node[0] == 12:
+                    vid = ref_vid(node)
+                    if vid is not None:
+                        ref_count[vid] = ref_count.get(vid, 0) + 1
+                    return
+                for item in node:
+                    count_refs(item)
+            elif isinstance(node, dict):
+                for value in node.values():
+                    count_refs(value)
+
+        input_refs = {}
+        for blocks in blocks_by_tgt:
+            for bid, blk in blocks.items():
+                if isinstance(blk, list):
+                    count_refs(blk)
+                    continue
+                if not isinstance(blk, dict):
+                    continue
+                if blk.get("opcode") == "data_variable":
+                    vid = block_vid(blk)
+                    if vid is not None:
+                        ref_count[vid] = ref_count.get(vid, 0) + 1
+                count_refs(blk.get("inputs"))
+                for entry in (blk.get("inputs") or {}).values():
+                    if not isinstance(entry, list):
+                        continue
+                    for item in entry[1:]:
+                        if isinstance(item, str) and item in blocks:
+                            input_refs[item] = input_refs.get(item, 0) + 1
+
+        edits = {}
+
+        def record_prim(owner, key, entry, vid, pair):
+            new_entry = [1, [pair[0], pair[1]]]
+            edits.setdefault(vid, []).append({
+                "inputs": owner,
+                "key": key,
+                "new": new_entry,
+                "remove": None,
+                "delta": jlen(new_entry) - jlen(entry),
+            })
+
+        def record_block(blocks, owner, key, entry, vid, bid, blk, pair):
+            if input_refs.get(bid, 0) != 1 or blk.get("next") is not None:
+                return
+            new_entry = [1, [pair[0], pair[1]]]
+            delta = (jlen(new_entry) - jlen(entry)
+                     - (jlen(bid) + jlen(blk) + 2))
+            edits.setdefault(vid, []).append({
+                "inputs": owner,
+                "key": key,
+                "new": new_entry,
+                "remove": bid,
+                "blocks": blocks,
+                "delta": delta,
+            })
+
+        for tgt, blocks in zip(targets, blocks_by_tgt):
+            if not isinstance(tgt, dict) or not blocks:
+                continue
+            done = set()
+
+            def scan_inputs(blk, known, owner_id):
+                inputs = blk.get("inputs")
+                if not isinstance(inputs, dict):
+                    return
+                for key, entry in list(inputs.items()):
+                    if not isinstance(entry, list) or len(entry) < 2:
+                        continue
+                    if key.startswith("SUBSTACK"):
+                        continue
+                    child = entry[1]
+                    if isinstance(child, list):
+                        vid = ref_vid(child)
+                        if vid is not None and vid in known:
+                            record_prim(inputs, key, entry, vid, known[vid])
+                    elif isinstance(child, str) and child in blocks:
+                        cb = blocks.get(child)
+                        if not isinstance(cb, dict) or child in done:
+                            continue
+                        if cb.get("opcode") == "data_variable":
+                            vid = block_vid(cb)
+                            if vid is not None and vid in known:
+                                record_block(blocks, inputs, key, entry, vid,
+                                             child, cb, known[vid])
+                        else:
+                            done.add(child)
+                            scan_inputs(cb, known, child)
+
+            def walk_chain(start, known):
+                cur = start
+                seen = set()
+                while isinstance(cur, str) and cur in blocks \
+                        and cur not in seen and cur not in done:
+                    seen.add(cur)
+                    blk = blocks.get(cur)
+                    if not isinstance(blk, dict):
+                        break
+                    done.add(cur)
+                    scan_inputs(blk, known, cur)
+                    if blk.get("opcode") == "data_setvariableto":
+                        vid = block_vid(blk)
+                        if vid in dominated \
+                                and self._set_literal(blk) == dominated[vid]:
+                            known = dict(known)
+                            known[vid] = dominated[vid]
+                    for key, entry in (blk.get("inputs") or {}).items():
+                        if not key.startswith("SUBSTACK"):
+                            continue
+                        if isinstance(entry, list) and len(entry) > 1 \
+                                and isinstance(entry[1], str):
+                            walk_chain(entry[1], dict(known))
+                    cur = blk.get("next")
+
+            for bid, blk in blocks.items():
+                if not isinstance(blk, dict) or bid in done:
+                    continue
+                parent = blk.get("parent")
+                if blk.get("topLevel") is True \
+                        or not (isinstance(parent, str) and parent in blocks):
+                    walk_chain(bid, dict(always))
+
+        for vid in list(edits):
+            items = edits[vid]
+            pair = always.get(vid)
+            total = sum(e["delta"] for e in items)
+            drop_store = False
+            variables = None
+            if pair is not None and writes.get(vid) is None \
+                    and ref_count.get(vid, 0) - len(items) == 0:
+                tgt, _name, _value = store[vid]
+                variables = tgt.get("variables")
+                if isinstance(variables, dict) and vid in variables:
+                    total -= jlen(vid) + jlen(variables[vid]) + 2
+                    drop_store = True
+            if total >= 0:
+                continue
+            for e in items:
+                e["inputs"][e["key"]] = e["new"]
+                if e["remove"] is not None:
+                    e["blocks"].pop(e["remove"], None)
+            st["const_vars_inlined"] += 1
+            st["const_reads_inlined"] += len(items)
+            if drop_store:
+                del variables[vid]
+                self._used_var_ids.discard(vid)
+                self._read_var_ids.discard(vid)
+                self._dropped_var_ids.add(vid)
+
+    def _chain_argument_params(self, blocks, ids):
+        """Return the definition arguments used by a chain, in order.
+
+        The result is a list of ``(name, is_boolean)`` pairs, or ``None`` when
+        the chain cannot be parameterised safely (a malformed reporter or one
+        name used with two different argument types).  Only reporters nested
+        inside the chain are considered; the chain continuation is not walked.
+        """
+        params = []
+        kinds = {}
+
+        def scan(bid, stack):
+            if not isinstance(bid, str) or bid not in blocks or bid in stack:
+                return True
+            blk = blocks.get(bid)
+            if not isinstance(blk, dict):
+                return True
+            op = blk.get("opcode")
+            if op in ("argument_reporter_string_number",
+                      "argument_reporter_boolean"):
+                fv = (blk.get("fields") or {}).get("VALUE")
+                name = fv[0] if isinstance(fv, list) and fv else None
+                if not isinstance(name, str) or not name:
+                    return False
+                is_bool = op == "argument_reporter_boolean"
+                if name in kinds:
+                    if kinds[name] != is_bool:
+                        return False
+                else:
+                    kinds[name] = is_bool
+                    params.append((name, is_bool))
+                return True
+            inputs = blk.get("inputs")
+            if isinstance(inputs, dict):
+                # Sorted keys keep the generated parameter order stable.
+                for key in sorted(inputs):
+                    value = inputs[key]
+                    if not isinstance(value, list):
+                        continue
+                    for item in value[1:]:
+                        if isinstance(item, str) and item in blocks:
+                            if not scan(item, stack | {bid}):
+                                return False
+            return True
+
+        for bid in ids:
+            if not scan(bid, frozenset()):
+                return None
+        return params
+
     def _extract_duplicates(self, blocks: dict) -> None:
-        """Move repeated stacks into argument-free custom blocks when smaller."""
+        """Move repeated stacks into custom blocks when that makes them smaller.
+
+        A repeated stack that uses definition arguments becomes a new custom
+        block taking those arguments; callers pass the original argument
+        reporters, so the values are unchanged.
+        """
         st = self.stats
         # Keep the loop bounded: each successful pass strictly reduces the
-        # target's block count, so this cannot run forever.
-        for _ in range(40):
+        # target's block count, so it cannot run forever.  Failed attempts only
+        # add their signature to ``banned``, so the bound also covers retries.
+        banned = set()
+        for _ in range(200):
             if self.cancelled():
                 raise Cancelled()
-            found = self._find_duplicate_group(blocks)
+            found = self._find_duplicate_group(blocks, banned)
             if not found:
                 break
-            starts, length = found
+            starts, length, warp, params, sig = found
             before = copy.deepcopy(blocks)
             old_count = len(before)
             old_size = len(json.dumps(before, ensure_ascii=False,
                                       separators=(",", ":")))
-            if not self._apply_duplicate_group(blocks, starts, length):
+            if not self._apply_duplicate_group(blocks, starts, length, warp,
+                                               params):
                 blocks.clear()
                 blocks.update(before)
-                break
+                banned.add(sig)
+                continue
             new_count = len(blocks)
             new_size = len(json.dumps(blocks, ensure_ascii=False,
                                       separators=(",", ":")))
             if new_count >= old_count or new_size >= old_size:
+                # This extraction is not profitable.  Remember it and try the
+                # next-best candidate instead of giving up on the whole target.
                 blocks.clear()
                 blocks.update(before)
-                break
+                banned.add(sig)
+                continue
             st["duplicates_extracted"] += 1
             st["dup_blocks_saved"] += old_count - new_count
 
-    def _find_duplicate_group(self, blocks: dict):
-        if not isinstance(blocks, dict) or len(blocks) < 12:
+    def _find_duplicate_group(self, blocks: dict, banned=None):
+        if not isinstance(blocks, dict):
             return None
-        min_len = 10
+        banned = banned or set()
+        # There is no fixed minimum length: a candidate is accepted only when
+        # the extraction actually makes the serialized blocks smaller, so even
+        # a single (possibly nested) block can be worth sharing.  Short chains
+        # are cheap to examine and rejected quickly unless they pay off.
+        min_len = 1
         max_len = 100000
         canon_cache = {}
 
@@ -1325,9 +2677,26 @@ class Compressor:
         def seq_key(ids):
             return tuple(canon_block(bid, False) for bid in ids)
 
+        param_cache = {}
+
+        def chain_params(ids):
+            ck = tuple(ids)
+            if ck not in param_cache:
+                param_cache[ck] = self._chain_argument_params(blocks, ids)
+            return param_cache[ck]
+
+        chain_cache = {}
+
+        def chain_of(bid):
+            ids = chain_cache.get(bid)
+            if ids is None:
+                ids = self._chain_ids(blocks, bid, max_len)
+                chain_cache[bid] = ids
+            return ids
+
         def common_length(a, b):
-            ca = self._chain_ids(blocks, a, max_len)
-            cb = self._chain_ids(blocks, b, max_len)
+            ca = chain_of(a)
+            cb = chain_of(b)
             n = 0
             for x, y in zip(ca, cb):
                 if canon_block(x, False) != canon_block(y, False):
@@ -1336,6 +2705,62 @@ class Compressor:
             return n, ca, cb
 
         groups = {}
+        warp_bodies = set()
+        owners = {}            # block id -> enclosing definition id
+        owner_conflicts = set()
+        def_argnames = {}      # definition id -> set of declared argument names
+        for bid, blk in blocks.items():
+            if not isinstance(blk, dict) or blk.get("opcode") != "procedures_definition":
+                continue
+            cb = (blk.get("inputs") or {}).get("custom_block")
+            pid = cb[1] if isinstance(cb, list) and len(cb) > 1 else None
+            proto = blocks.get(pid) if isinstance(pid, str) else None
+            mut = (proto or {}).get("mutation") or {}
+            try:
+                names = json.loads(mut.get("argumentnames") or "[]")
+            except (TypeError, ValueError):
+                names = []
+            if isinstance(names, list):
+                def_argnames[bid] = {n for n in names if isinstance(n, str)}
+            # Remember which definition owns each body block so a chain that
+            # uses arguments is only moved when every occurrence is inside the
+            # same definition (the call-site reporters then resolve to the same
+            # values as the original body did).
+            body = blk.get("next")
+            if isinstance(body, str) and body in blocks:
+                for cid in self._collect_subgraph(blocks, body, True):
+                    if cid in owners and owners[cid] != bid:
+                        owner_conflicts.add(cid)
+                    else:
+                        owners[cid] = bid
+            # "Run without screen refresh" is a property of the enclosing
+            # definition.  Moving part of a warp body into a non-warp
+            # definition would change when the screen refreshes.
+            if mut.get("warp") in (True, "true"):
+                body = blk.get("next")
+                if isinstance(body, str) and body in blocks:
+                    warp_bodies |= self._collect_subgraph(blocks, body, True)
+        for cid in owner_conflicts:
+            owners.pop(cid, None)
+
+        # A block referenced from a reporter input (VALUE, NUM1, CONDITION,
+        # ...) is a reporter, not a stack.  It must never start a chain:
+        # moving it into a custom-block body would turn it into a stacked
+        # block and break script compilation.  Only SUBSTACK slots hold
+        # stacked blocks.
+        reporter_ids = set()
+        for blk in blocks.values():
+            if not isinstance(blk, dict):
+                continue
+            inputs = blk.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            for key, value in inputs.items():
+                if (not isinstance(value, list) or len(value) < 2
+                        or not isinstance(value[1], str)):
+                    continue
+                if key not in ("SUBSTACK", "SUBSTACK2"):
+                    reporter_ids.add(value[1])
         for bid, blk in blocks.items():
             if not isinstance(blk, dict) or blk.get("shadow") is True:
                 continue
@@ -1344,15 +2769,21 @@ class Compressor:
                 continue
             if op.startswith("argument_reporter"):
                 continue
+            if bid in reporter_ids:
+                continue
             if self._is_hat_opcode(op):
                 continue
             ids = self._chain_ids(blocks, bid, min_len)
             if len(ids) < min_len:
                 continue
-            groups.setdefault(seq_key(ids), []).append(bid)
+            # "Run without screen refresh" belongs to the enclosing custom
+            # block.  Group by that context so a warp body is only ever moved
+            # into another warp definition (and vice versa).
+            context = bid in warp_bodies
+            groups.setdefault((context, seq_key(ids)), []).append(bid)
 
-        best = None  # (score, starts, length)
-        for sig, starts in groups.items():
+        best = None  # (score, starts, length, warp, params, signature)
+        for (context, sig), starts in groups.items():
             if len(starts) < 2:
                 continue
             base = starts[0]
@@ -1380,11 +2811,9 @@ class Compressor:
                 key = seq_key(ids_a)
                 if key != seq_key(ids_b):
                     continue
-                # Check the code does not use definition arguments or
-                # scope-sensitive stop blocks.
-                sub_a = self._collect_subgraph(blocks, a, False)
-                # For the chain, collect each block's nested inputs but not the
-                # continuation past the chain.
+                # Check the chain does not contain scope-sensitive stop
+                # blocks or another definition/prototype.  Argument reporters
+                # are allowed; they become parameters below.
                 sub_a = set()
                 for cid in ids_a:
                     sub_a |= self._collect_subgraph(blocks, cid, False)
@@ -1395,13 +2824,29 @@ class Compressor:
                         continue
                     op = cb.get("opcode")
                     if (not isinstance(op, str)
-                            or op in EXTRACT_EXCLUDE_OPS
-                            or op.startswith("argument_reporter")
+                            or op in EXTRACT_FORBIDDEN_OPS
                             or self._is_hat_opcode(op)):
                         bad = True
                         break
                 if bad:
                     continue
+
+                params = chain_params(ids_a)
+                if params is None:
+                    continue
+                owner = None
+                if params:
+                    # Argument values are fixed for the duration of one custom
+                    # block call, so passing the original reporters at the call
+                    # site is safe.  Requiring one owning definition also
+                    # guarantees every call-site reporter resolves the same
+                    # way the moved body did.
+                    owner = owners.get(a)
+                    if owner is None:
+                        continue
+                    known = def_argnames.get(owner, set())
+                    if any(name not in known for name, _ in params):
+                        continue
 
                 # Pick all non-overlapping occurrences of the identical full
                 # sequence.  Different continuations are fine: the call's next
@@ -1412,6 +2857,11 @@ class Compressor:
                     cids = self._chain_ids(blocks, cand, length)
                     if len(cids) < length or seq_key(cids) != key:
                         continue
+                    if params:
+                        if owners.get(cand) != owner:
+                            continue
+                        if chain_params(cids) != params:
+                            continue
                     csub = set()
                     for cid in cids:
                         csub |= self._collect_subgraph(blocks, cid, False)
@@ -1425,20 +2875,27 @@ class Compressor:
                 for cid in self._chain_ids(blocks, selected[0], length):
                     copy_blocks |= self._collect_subgraph(blocks, cid, False)
                 blocks_per_copy = len(copy_blocks)
-                # A definition + prototype + one call per occurrence must be
-                # cheaper than the copies that are removed.
+                # A definition + prototype + one call per occurrence (with one
+                # reporter per parameter) must be cheaper than the copies that
+                # are removed.
                 savings = ((len(selected) - 1) * blocks_per_copy
-                           - len(selected) - 2)
+                           - len(selected) - 2
+                           - len(selected) * len(params))
                 if savings <= 0:
                     continue
                 score = (savings, length, len(selected))
+                cand_sig = (context, length, key)
+                if cand_sig in banned:
+                    continue
                 if best is None or score > best[0]:
-                    best = (score, selected, length)
+                    best = (score, selected, length, context, tuple(params),
+                            cand_sig)
         if best is None:
             return None
-        return best[1], best[2]
+        return best[1], best[2], best[3], list(best[4]), best[5]
 
-    def _apply_duplicate_group(self, blocks: dict, starts, length: int) -> bool:
+    def _apply_duplicate_group(self, blocks: dict, starts, length: int,
+                               warp: bool = False, params=()) -> bool:
         if len(starts) < 2:
             return False
         donor = starts[0]
@@ -1479,18 +2936,68 @@ class Compressor:
 
         existing_codes = set()
         for blk in blocks.values():
-            if isinstance(blk, dict) and blk.get("opcode") == "procedures_prototype":
+            if not isinstance(blk, dict):
+                continue
+            if blk.get("opcode") in ("procedures_prototype", "procedures_call"):
                 code = (blk.get("mutation") or {}).get("proccode")
                 if isinstance(code, str):
                     existing_codes.add(code)
         n = 1
-        while f"dup{n}" in existing_codes:
+        while any(code == f"dup{n}" or code.startswith(f"dup{n} ")
+                  for code in existing_codes):
             n += 1
-        proccode = f"dup{n}"
+        base_code = f"dup{n}"
+
+        # Argument IDs must not collide with IDs of existing custom blocks.
+        # They are independent from block IDs, so reserve both kinds.
+        arg_reserved = set(reserved)
+        for blk in blocks.values():
+            if not isinstance(blk, dict):
+                continue
+            if blk.get("opcode") not in ("procedures_prototype",
+                                         "procedures_call"):
+                continue
+            raw = (blk.get("mutation") or {}).get("argumentids")
+            try:
+                arg_ids = json.loads(raw) if isinstance(raw, str) else None
+            except (TypeError, ValueError):
+                arg_ids = None
+            if isinstance(arg_ids, list):
+                arg_reserved.update(a for a in arg_ids if isinstance(a, str))
+        new_arg_ids = []
+        arg_counter = 0
+        for _name, _is_bool in params:
+            while True:
+                arg_counter += 1
+                aid = f"arg{arg_counter}"
+                if aid not in arg_reserved:
+                    arg_reserved.add(aid)
+                    break
+            new_arg_ids.append(aid)
+
+        placeholders = " ".join("%b" if is_bool else "%s"
+                                for _name, is_bool in params)
+        proccode = base_code + (f" {placeholders}" if placeholders else "")
+        arg_ids_json = json.dumps(new_arg_ids, separators=(",", ":"))
+        arg_names_json = json.dumps([name for name, _ in params],
+                                    ensure_ascii=False,
+                                    separators=(",", ":"))
+        arg_defaults_json = json.dumps(
+            [False if is_bool else "" for _name, is_bool in params],
+            separators=(",", ":"))
 
         def_id = new_id("d")
         proto_id = new_id("p")
         call_ids = [new_id("c") for _ in infos]
+
+        # Adjacent/embedded occurrences can have a predecessor that is part of
+        # another extracted copy.  Redirect those links to the copy's call.
+        owner_call = {}
+        for info, call_id in zip(infos, call_ids):
+            for cid in info["ids"]:
+                owner_call.setdefault(cid, call_id)
+                for sub in self._collect_subgraph(blocks, cid, False):
+                    owner_call.setdefault(sub, call_id)
 
         # Move the first copy into the definition body.
         body_first = blocks[donor]
@@ -1523,28 +3030,49 @@ class Compressor:
                 "tagName": "mutation",
                 "children": [],
                 "proccode": proccode,
-                "argumentids": "[]",
-                "argumentnames": "[]",
-                "argumentdefaults": "[]",
-                "warp": "false",
+                "argumentids": arg_ids_json,
+                "argumentnames": arg_names_json,
+                "argumentdefaults": arg_defaults_json,
+                "warp": "true" if warp else "false",
             },
         }
 
         for info, call_id in zip(infos, call_ids):
             start = info["start"]
-            prev = info["prev"]
-            cont = info["cont"]
+            prev = owner_call.get(info["prev"], info["prev"])
+            cont = owner_call.get(info["cont"], info["cont"])
             if info is not infos[0]:
                 sub = set()
                 for cid in info["ids"]:
                     sub |= self._collect_subgraph(blocks, cid, False)
                 for cid in sub:
                     blocks.pop(cid, None)
+            # Re-create the arguments at this call site.  Argument values are
+            # constant while the enclosing custom block runs, so evaluating
+            # the same reporters here yields the same values as before.
+            call_inputs = {}
+            for aid, (arg_name, is_bool) in zip(new_arg_ids, params):
+                reporter_id = new_id("r")
+                blocks[reporter_id] = {
+                    "opcode": ("argument_reporter_boolean" if is_bool
+                               else "argument_reporter_string_number"),
+                    "next": None,
+                    "parent": call_id,
+                    "inputs": {},
+                    "fields": {"VALUE": [arg_name, None]},
+                    "shadow": False,
+                    "topLevel": False,
+                }
+                if is_bool:
+                    # Boolean inputs have no shadow block.
+                    call_inputs[aid] = [2, reporter_id]
+                else:
+                    call_inputs[aid] = [3, reporter_id, [10, ""]]
             call = {
                 "opcode": "procedures_call",
                 "next": cont,
                 "parent": prev,
-                "inputs": {},
+                "inputs": call_inputs,
                 "fields": {},
                 "shadow": False,
                 "topLevel": bool(info["top"] and prev is None),
@@ -1552,8 +3080,8 @@ class Compressor:
                     "tagName": "mutation",
                     "children": [],
                     "proccode": proccode,
-                    "argumentids": "[]",
-                    "warp": "false",
+                    "argumentids": arg_ids_json,
+                    "warp": "true" if warp else "false",
                 },
             }
             if call["topLevel"]:
@@ -1567,6 +3095,8 @@ class Compressor:
                     if parent.get("next") == start:
                         parent["next"] = call_id
                         replaced = True
+                    elif parent.get("next") == call_id:
+                        replaced = True
                     inputs = parent.get("inputs")
                     if not replaced and isinstance(inputs, dict):
                         for key, value in inputs.items():
@@ -1579,7 +3109,511 @@ class Compressor:
                 if not replaced:
                     call["parent"] = None
                     call["topLevel"] = True
-            if cont is not None and cont in blocks:
+            if (cont is not None and cont in blocks
+                    and cont not in owner_call):
+                blocks[cont]["parent"] = call_id
+
+        return True
+
+    @staticmethod
+    def _near_hole(entry):
+        """Return ``(type, value)`` when an input is a plain literal.
+
+        Only slots that are represented by a literal shadow with no block
+        behind it can be replaced by a custom-block argument.  Dropdown
+        ``fields`` are deliberately not handled: they are not inputs, so
+        Scratch never evaluates a reporter there.
+        """
+        if (isinstance(entry, list) and len(entry) == 2 and entry[0] == 1
+                and isinstance(entry[1], list) and len(entry[1]) >= 2
+                and entry[1][0] in LITERAL_PRIMITIVE_TYPES):
+            return entry[1][0], entry[1][1]
+        return None
+
+    def _near_canon(self, blocks: dict, bid: str, cache=None):
+        """Return a literal-wildcard signature plus the wildcard slots.
+
+        Two blocks with the same signature have the same opcode, fields,
+        mutation and reporter shape; they may differ only in literal input
+        values.  ``holes`` holds ``(parent_id, entry, type, value)`` tuples
+        in a deterministic order, where ``entry`` is the live input list so
+        the caller can replace it with an argument reporter.
+        """
+        if cache is None:
+            cache = {}
+
+        def freeze(value):
+            if isinstance(value, dict):
+                return tuple(sorted((str(k), freeze(v))
+                                    for k, v in value.items()))
+            if isinstance(value, list):
+                return tuple(freeze(v) for v in value)
+            return value
+
+        def canon(current, stack):
+            if current in cache:
+                return cache[current]
+            if current in stack:
+                return (("cycle",), [])
+            blk = blocks.get(current)
+            if isinstance(blk, list):
+                value = (("prim", freeze(blk)), [])
+                cache[current] = value
+                return value
+            if not isinstance(blk, dict):
+                value = (("missing",), [])
+                cache[current] = value
+                return value
+            nstack = stack | {current}
+            fields = tuple(sorted(
+                (k, freeze(v)) for k, v in (blk.get("fields") or {}).items()))
+            holes = []
+            inputs = []
+            for key in sorted((blk.get("inputs") or {})):
+                entry = blk["inputs"][key]
+                hole = self._near_hole(entry)
+                if hole is not None:
+                    holes.append((current, entry, hole[0], hole[1]))
+                    inputs.append((key, ("literal",)))
+                    continue
+                if not isinstance(entry, list):
+                    inputs.append((key, ("value", freeze(entry))))
+                    continue
+                parts = []
+                for item in entry:
+                    if isinstance(item, str) and item in blocks:
+                        child_sig, child_holes = canon(item, nstack)
+                        parts.append(("ref", child_sig))
+                        holes.extend(child_holes)
+                    elif isinstance(item, list):
+                        parts.append(("list", freeze(item)))
+                    else:
+                        parts.append(("value", item))
+                inputs.append((key, tuple(parts)))
+            value = (
+                ("blk", blk.get("opcode"), fields, tuple(inputs),
+                 freeze(blk.get("mutation") or {}), bool(blk.get("shadow"))),
+                holes,
+            )
+            cache[current] = value
+            return value
+
+        return canon(bid, frozenset())
+
+    def _extract_near_duplicates(self, blocks: dict) -> None:
+        """Share single-block patterns whose literals differ.
+
+        The differing literal slots become custom-block arguments; every
+        other part of the pattern (including dropdown fields) must match
+        exactly.  A group is only applied when both the block count and the
+        serialized size shrink, so the result is always smaller.
+        """
+        st = self.stats
+        banned = set()
+        for _ in range(200):
+            if self.cancelled():
+                raise Cancelled()
+            found = self._find_near_duplicate_group(blocks, banned)
+            if not found:
+                break
+            starts, diff_idx, params, warp, sig = found
+            before = copy.deepcopy(blocks)
+            old_count = len(before)
+            old_size = len(json.dumps(before, ensure_ascii=False,
+                                      separators=(",", ":")))
+            if not self._apply_near_duplicate_group(
+                    blocks, starts, diff_idx, params, warp):
+                blocks.clear()
+                blocks.update(before)
+                banned.add(sig)
+                continue
+            new_count = len(blocks)
+            new_size = len(json.dumps(blocks, ensure_ascii=False,
+                                      separators=(",", ":")))
+            if new_count >= old_count or new_size >= old_size:
+                blocks.clear()
+                blocks.update(before)
+                banned.add(sig)
+                continue
+            st["near_duplicates_extracted"] += 1
+            st["near_blocks_saved"] += old_count - new_count
+
+    def _find_near_duplicate_group(self, blocks: dict, banned=None):
+        if not isinstance(blocks, dict):
+            return None
+        banned = banned or set()
+        cache = {}
+
+        warp_bodies = set()
+        owners = {}
+        owner_conflicts = set()
+        def_argnames = {}
+        for bid, blk in blocks.items():
+            if not isinstance(blk, dict) or blk.get("opcode") != "procedures_definition":
+                continue
+            cb = (blk.get("inputs") or {}).get("custom_block")
+            pid = cb[1] if isinstance(cb, list) and len(cb) > 1 else None
+            proto = blocks.get(pid) if isinstance(pid, str) else None
+            mut = (proto or {}).get("mutation") or {}
+            try:
+                names = json.loads(mut.get("argumentnames") or "[]")
+            except (TypeError, ValueError):
+                names = []
+            if isinstance(names, list):
+                def_argnames[bid] = {n for n in names if isinstance(n, str)}
+            body = blk.get("next")
+            if isinstance(body, str) and body in blocks:
+                for cid in self._collect_subgraph(blocks, body, True):
+                    if cid in owners and owners[cid] != bid:
+                        owner_conflicts.add(cid)
+                    else:
+                        owners[cid] = bid
+            if mut.get("warp") in (True, "true"):
+                body = blk.get("next")
+                if isinstance(body, str) and body in blocks:
+                    warp_bodies |= self._collect_subgraph(blocks, body, True)
+        for cid in owner_conflicts:
+            owners.pop(cid, None)
+
+        # A block referenced from a reporter input is never a stack candidate;
+        # only SUBSTACK slots can hold stacked blocks.
+        reporter_ids = set()
+        for blk in blocks.values():
+            if not isinstance(blk, dict):
+                continue
+            inputs = blk.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            for key, value in inputs.items():
+                if (not isinstance(value, list) or len(value) < 2
+                        or not isinstance(value[1], str)):
+                    continue
+                if key not in ("SUBSTACK", "SUBSTACK2"):
+                    reporter_ids.add(value[1])
+
+        groups = {}
+        for bid, blk in blocks.items():
+            if not isinstance(blk, dict) or blk.get("shadow") is True:
+                continue
+            op = blk.get("opcode")
+            if not isinstance(op, str) or op in EXTRACT_EXCLUDE_OPS:
+                continue
+            if op.startswith("argument_reporter"):
+                continue
+            if bid in reporter_ids:
+                continue
+            if self._is_hat_opcode(op):
+                continue
+            sig, holes = self._near_canon(blocks, bid, cache)
+            if not holes:
+                # Identical subtrees are handled by _extract_duplicates.
+                continue
+            context = bid in warp_bodies
+            groups.setdefault((context, sig), []).append(bid)
+
+        best = None
+        for (context, sig), starts in groups.items():
+            if len(starts) < 2 or (context, sig) in banned:
+                continue
+            # Pick non-overlapping occurrences.  A control block's subgraph
+            # includes its substacks, so nested occurrences are skipped.
+            selected = []
+            used = set()
+            info = []
+            for cand in starts:
+                sub = self._collect_subgraph(blocks, cand, False)
+                if sub & used:
+                    continue
+                selected.append(cand)
+                used |= sub
+                info.append((cand, sub))
+            if len(selected) < 2:
+                continue
+
+            base = selected[0]
+            params = self._chain_argument_params(blocks, [base])
+            if params is None:
+                continue
+            if params:
+                # Existing definition arguments are passed through as
+                # reporters, so every occurrence must live in the same
+                # definition (same values at every call site).
+                owner = owners.get(base)
+                if owner is None:
+                    continue
+                known = def_argnames.get(owner, set())
+                if any(name not in known for name, _ in params):
+                    continue
+                if any(owners.get(cand) != owner for cand in selected):
+                    continue
+
+            hole_lists = [self._near_canon(blocks, cand, cache)[1]
+                          for cand in selected]
+            count = len(hole_lists[0])
+            if any(len(h) != count for h in hole_lists):
+                continue
+            diff_idx = []
+            for i in range(count):
+                values = {(h[i][2], h[i][3]) for h in hole_lists}
+                if len(values) > 1:
+                    diff_idx.append(i)
+            if not diff_idx:
+                # Same literals everywhere; the exact pass owns this pattern.
+                continue
+
+            size = len(info[0][1])
+            n = len(selected)
+            savings = ((n - 1) * size
+                       - (2 + n + n * len(params) + len(diff_idx)))
+            if savings <= 0:
+                continue
+            score = (savings, size, n)
+            if best is None or score > best[0]:
+                best = (score, selected, diff_idx, list(params), context,
+                        (context, sig))
+        if best is None:
+            return None
+        return best[1], best[2], best[3], best[4], best[5]
+
+    def _apply_near_duplicate_group(self, blocks: dict, starts, diff_idx,
+                                    params, warp: bool = False) -> bool:
+        if len(starts) < 2:
+            return False
+        infos = []
+        cache = {}
+        for start in starts:
+            blk = blocks.get(start)
+            if not isinstance(blk, dict):
+                return False
+            sig, holes = self._near_canon(blocks, start, cache)
+            if len(holes) < max(diff_idx, default=-1) + 1:
+                return False
+            infos.append({
+                "start": start,
+                "sub": self._collect_subgraph(blocks, start, False),
+                "holes": holes,
+                "prev": (blk.get("parent") if isinstance(blk.get("parent"), str)
+                         and blk.get("parent") in blocks else None),
+                "cont": (blk.get("next") if isinstance(blk.get("next"), str)
+                         and blk.get("next") in blocks else None),
+                "top": blk.get("topLevel") is True,
+                "x": blk.get("x", 0),
+                "y": blk.get("y", 0),
+            })
+
+        reserved = set(blocks)
+
+        def new_id(prefix: str) -> str:
+            i = 1
+            while f"{prefix}{i}" in reserved:
+                i += 1
+            bid = f"{prefix}{i}"
+            reserved.add(bid)
+            return bid
+
+        existing_codes = set()
+        arg_reserved = set(reserved)
+        for blk in blocks.values():
+            if not isinstance(blk, dict):
+                continue
+            if blk.get("opcode") not in ("procedures_prototype",
+                                         "procedures_call"):
+                continue
+            mut = blk.get("mutation") or {}
+            code = mut.get("proccode")
+            if isinstance(code, str):
+                existing_codes.add(code)
+            raw = mut.get("argumentids")
+            try:
+                arg_ids = json.loads(raw) if isinstance(raw, str) else None
+            except (TypeError, ValueError):
+                arg_ids = None
+            if isinstance(arg_ids, list):
+                arg_reserved.update(a for a in arg_ids if isinstance(a, str))
+
+        n = 1
+        while any(code == f"ndup{n}" or code.startswith(f"ndup{n} ")
+                  for code in existing_codes):
+            n += 1
+        base_code = f"ndup{n}"
+
+        used_names = {name for name, _ in params}
+        lit_names = []
+        k = 0
+        while len(lit_names) < len(diff_idx):
+            k += 1
+            name = f"p{k}"
+            if name not in used_names:
+                used_names.add(name)
+                lit_names.append(name)
+        all_params = list(params) + [(name, False) for name in lit_names]
+
+        new_arg_ids = []
+        arg_counter = 0
+        for _name, _is_bool in all_params:
+            while True:
+                arg_counter += 1
+                aid = f"arg{arg_counter}"
+                if aid not in arg_reserved:
+                    arg_reserved.add(aid)
+                    break
+            new_arg_ids.append(aid)
+
+        placeholders = " ".join("%b" if is_bool else "%s"
+                                for _name, is_bool in all_params)
+        proccode = base_code + (f" {placeholders}" if placeholders else "")
+        arg_ids_json = json.dumps(new_arg_ids, separators=(",", ":"))
+        arg_names_json = json.dumps([name for name, _ in all_params],
+                                    ensure_ascii=False,
+                                    separators=(",", ":"))
+        arg_defaults_json = json.dumps(
+            [False if is_bool else "" for _name, is_bool in all_params],
+            separators=(",", ":"))
+
+        def_id = new_id("d")
+        proto_id = new_id("p")
+        call_ids = [new_id("c") for _ in infos]
+        body_reporter_ids = [new_id("r") for _ in diff_idx]
+        call_reporter_ids = [[new_id("r") for _ in params] for _ in infos]
+
+        # Turn the first copy into the definition body.
+        donor = starts[0]
+        body = blocks[donor]
+        body["parent"] = def_id
+        body.pop("topLevel", None)
+        body.pop("x", None)
+        body.pop("y", None)
+        body["next"] = None
+        for j, (hole_idx, rid) in enumerate(zip(diff_idx, body_reporter_ids)):
+            parent_id, entry, _lit_type, _lit_value = infos[0]["holes"][hole_idx]
+            blocks[rid] = {
+                "opcode": "argument_reporter_string_number",
+                "next": None,
+                "parent": parent_id,
+                "inputs": {},
+                "fields": {"VALUE": [lit_names[j], None]},
+                "shadow": False,
+                "topLevel": False,
+            }
+            entry[:] = [2, rid]
+
+        blocks[def_id] = {
+            "opcode": "procedures_definition",
+            "next": donor,
+            "parent": None,
+            "inputs": {"custom_block": [1, proto_id]},
+            "fields": {},
+            "shadow": False,
+            "topLevel": True,
+            "x": 0,
+            "y": 1000 + (self.stats["duplicates_extracted"]
+                         + self.stats["near_duplicates_extracted"]) * 100,
+        }
+        blocks[proto_id] = {
+            "opcode": "procedures_prototype",
+            "next": None,
+            "parent": def_id,
+            "inputs": {},
+            "fields": {},
+            "shadow": True,
+            "topLevel": False,
+            "mutation": {
+                "tagName": "mutation",
+                "children": [],
+                "proccode": proccode,
+                "argumentids": arg_ids_json,
+                "argumentnames": arg_names_json,
+                "argumentdefaults": arg_defaults_json,
+                "warp": "true" if warp else "false",
+            },
+        }
+
+        # Create every call before linking: adjacent occurrences may point at
+        # each other, and both call blocks must exist by then.
+        for info, call_id, reporter_ids in zip(infos, call_ids,
+                                               call_reporter_ids):
+            call_inputs = {}
+            for k, (arg_name, is_bool) in enumerate(params):
+                rid = reporter_ids[k]
+                blocks[rid] = {
+                    "opcode": ("argument_reporter_boolean" if is_bool
+                               else "argument_reporter_string_number"),
+                    "next": None,
+                    "parent": call_id,
+                    "inputs": {},
+                    "fields": {"VALUE": [arg_name, None]},
+                    "shadow": False,
+                    "topLevel": False,
+                }
+                aid = new_arg_ids[k]
+                if is_bool:
+                    call_inputs[aid] = [2, rid]
+                else:
+                    call_inputs[aid] = [3, rid, [10, ""]]
+            for j, aid in enumerate(new_arg_ids[len(params):]):
+                _parent, _entry, lit_type, lit_value = info["holes"][diff_idx[j]]
+                call_inputs[aid] = [1, [lit_type, lit_value]]
+            blocks[call_id] = {
+                "opcode": "procedures_call",
+                "next": None,
+                "parent": None,
+                "inputs": call_inputs,
+                "fields": {},
+                "shadow": False,
+                "topLevel": False,
+                "mutation": {
+                    "tagName": "mutation",
+                    "children": [],
+                    "proccode": proccode,
+                    "argumentids": arg_ids_json,
+                    "warp": "true" if warp else "false",
+                },
+            }
+
+        owner_call = {}
+        for info, call_id in zip(infos, call_ids):
+            for cid in info["sub"]:
+                owner_call.setdefault(cid, call_id)
+
+        # Remove the copies that are replaced by calls; the donor lives on as
+        # the definition body.
+        for info in infos[1:]:
+            for cid in info["sub"]:
+                blocks.pop(cid, None)
+
+        for info, call_id in zip(infos, call_ids):
+            start = info["start"]
+            prev = owner_call.get(info["prev"], info["prev"])
+            cont = owner_call.get(info["cont"], info["cont"])
+            call = blocks[call_id]
+            call["next"] = cont
+            call["parent"] = prev
+            if info["top"] and prev is None:
+                call["topLevel"] = True
+                call["x"] = info["x"]
+                call["y"] = info["y"]
+            if prev is not None and prev in blocks:
+                parent = blocks[prev]
+                replaced = False
+                if isinstance(parent, dict):
+                    if parent.get("next") == start:
+                        parent["next"] = call_id
+                        replaced = True
+                    elif parent.get("next") == call_id:
+                        replaced = True
+                    inputs = parent.get("inputs")
+                    if not replaced and isinstance(inputs, dict):
+                        for value in inputs.values():
+                            if not isinstance(value, list):
+                                continue
+                            for i, item in enumerate(value):
+                                if i > 0 and item == start:
+                                    value[i] = call_id
+                                    replaced = True
+                if not replaced:
+                    call["parent"] = None
+                    call["topLevel"] = True
+            if cont is not None and cont in blocks and cont not in owner_call:
                 blocks[cont]["parent"] = call_id
 
         return True
@@ -1623,18 +3657,33 @@ class Compressor:
         retained = {old for old, g in groups.items() if len(g) > 1}
         proc_map = {}
         argmaps = {}      # proto_id -> {old_argname: new_argname}
+        # Reserve every existing proccode (including calls whose definition is
+        # missing) so a generated short name cannot bind to an orphan call.
         used_new = set(retained)
+        for p in protos.values():
+            code = ((p.get("mutation") or {}).get("proccode")
+                    if isinstance(p, dict) else None)
+            if isinstance(code, str):
+                used_new.add(code)
+        for b in calls:
+            code = ((b.get("mutation") or {}).get("proccode")
+                    if isinstance(b, dict) else None)
+            if isinstance(code, str):
+                used_new.add(code)
         i = 0
         for old, grp in groups.items():
             if len(grp) > 1:
                 continue
+            placeholders = proccode_placeholders(old)
+            suffix = (" " + " ".join(placeholders)) if placeholders else ""
             while True:
                 i += 1
                 cand = encode_id(i)
-                if cand not in used_new and cand != old:
+                new_code = cand + suffix
+                if new_code not in used_new and new_code != old:
                     break
-            used_new.add(cand)
-            proc_map[old] = cand
+            used_new.add(new_code)
+            proc_map[old] = new_code
             st["procs_renamed"] += 1
 
         # 引数名の短縮(proccodeが重複している定義も各定義内では安全)
@@ -1697,6 +3746,21 @@ class Compressor:
                 nxt = blk.get("next")
                 if isinstance(nxt, str) and nxt:
                     stack.append(nxt)
+
+    def _normalize_parent_markers(self, blocks: dict) -> None:
+        """Keep ``topLevel``/workspace coordinates only on real root blocks.
+
+        Extraction passes can first mark a replacement call as top-level and
+        later splice it into a stack.  If the stale marker is left behind, the
+        editor sees a block that is both top-level and a child, which is an
+        inconsistent project structure.
+        """
+        for blk in blocks.values():
+            if not isinstance(blk, dict) or blk.get("parent") is None:
+                continue
+            blk.pop("topLevel", None)
+            blk.pop("x", None)
+            blk.pop("y", None)
 
     def _strip_block_defaults(self, blocks: dict) -> None:
         st = self.stats
@@ -2193,7 +4257,16 @@ def run_cli(argv) -> int:
           f"obscured defaults {st['obscured_shadows_removed']}")
     print(f"         initial values cleared {st['vars_initialized'] + st['lists_initialized']} / "
           f"duplicate groups {st['duplicates_extracted']} "
-          f"({st['dup_blocks_saved']} blocks saved)")
+          f"({st['dup_blocks_saved']} blocks saved) / "
+          f"near-duplicates {st['near_duplicates_extracted']} "
+          f"({st['near_blocks_saved']} blocks saved)")
+    print(f"         loops {st['loops_created']} ({st['loop_blocks_saved']} blocks saved) / "
+          f"defs inlined {st['procs_inlined']} / folded values {st['const_values_folded']} / "
+          f"constant vars {st['const_vars_inlined']} "
+          f"({st['const_reads_inlined']} reads)")
+    print(f"         no-op defs {st['noop_procs_removed']} / no-op messages "
+          f"{st['noop_broadcasts_removed']} / if-else simplified "
+          f"{st['ifelse_converted']}")
     return 0
 
 
@@ -2230,6 +4303,7 @@ def run_gui() -> int:
             self.opt_unreachable = tk.BooleanVar(value=True)
             self.opt_init = tk.BooleanVar(value=True)
             self.opt_dup = tk.BooleanVar(value=True)
+            self.opt_neardup = tk.BooleanVar(value=True)
             self.pct_var = tk.DoubleVar(value=0.0)
             self.phase_var = tk.StringVar(value="Idle")
 
@@ -2287,8 +4361,11 @@ def run_gui() -> int:
                             text="Blank initial values that are always overwritten first"
                             ).grid(row=8, column=0, sticky="w")
             ttk.Checkbutton(fopt, variable=self.opt_dup,
-                            text="Extract repeated code (10+ blocks) into custom blocks"
+                            text="Extract repeated code into custom blocks"
                             ).grid(row=9, column=0, sticky="w")
+            ttk.Checkbutton(fopt, variable=self.opt_neardup,
+                            text="Share near-duplicates by passing differing literals as arguments"
+                            ).grid(row=10, column=0, sticky="w")
 
             btns = ttk.Frame(outer)
             btns.pack(fill="x", pady=8)
@@ -2384,7 +4461,8 @@ def run_gui() -> int:
                            drop_obscured_shadows=self.opt_shadows.get(),
                            remove_unreachable=self.opt_unreachable.get(),
                            clear_initial_values=self.opt_init.get(),
-                           extract_duplicates=self.opt_dup.get())
+                           extract_duplicates=self.opt_dup.get(),
+                           near_duplicates=self.opt_neardup.get())
             self.payload = None
             self.cancel_flag.clear()
             self.set_running(True)
@@ -2473,7 +4551,17 @@ def run_gui() -> int:
                 f"hidden defaults {st['obscured_shadows_removed']}\n"
                 f"Initial values cleared {st['vars_initialized'] + st['lists_initialized']} / "
                 f"duplicate groups {st['duplicates_extracted']} "
-                f"({st['dup_blocks_saved']} blocks saved)")
+                f"({st['dup_blocks_saved']} blocks saved) / "
+                f"near-duplicates {st['near_duplicates_extracted']} "
+                f"({st['near_blocks_saved']} blocks saved)\n"
+                f"Loops {st['loops_created']} ({st['loop_blocks_saved']} blocks saved) / "
+                f"defs inlined {st['procs_inlined']} / "
+                f"folded values {st['const_values_folded']} / "
+                f"constant vars {st['const_vars_inlined']} "
+                f"({st['const_reads_inlined']} reads)\n"
+                f"No-op defs {st['noop_procs_removed']} / no-op messages "
+                f"{st['noop_broadcasts_removed']} / if-else simplified "
+                f"{st['ifelse_converted']}")
             self.log_line(f"Done: {s['ratio']:.1f}% smaller "
                           f"({human_size(s['orig_json_size'])} → "
                           f"{human_size(s['new_json_size'])})")

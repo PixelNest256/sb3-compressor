@@ -46,6 +46,14 @@ def build_sample():
                                        inputs={"VALUE": [1, [10, "0"]]},
                                        fields={"VARIABLE":
                                                ["\u2601 cloudvar", VID_CLOUD]}),
+        # A real receiver so the broadcast is not treated as a no-op.
+        "blk00000000000000000005": blk("event_whenbroadcastreceived",
+                                       topLevel=True, x=0, y=600,
+                                       next="blk00000000000000000006",
+                                       fields={"BROADCAST_OPTION": ["go!", BID_GO]}),
+        "blk00000000000000000006": blk("motion_movesteps",
+                                       parent="blk00000000000000000005",
+                                       inputs={"STEPS": [1, [4, "1"]]}),
     }
     sprite_blocks = {
         "sp0000000000000000001": blk("event_whenflagclicked", topLevel=True,
@@ -153,6 +161,863 @@ def build_sample():
                  "platform": {"name": "TurboWarp", "url": "https://turbowarp.org/"}},
     }
     return project
+
+
+def build_feature_sample():
+    """新機能（未表示ストア削除・初期値・到達不能・重複・隠れ既定値）の検証用。"""
+    def blk(opcode, **kw):
+        b = {"opcode": opcode, "next": None, "parent": None, "inputs": {},
+             "fields": {}, "shadow": False, "topLevel": False}
+        b.update(kw)
+        return b
+
+    V = {
+        "keepRead": "vKeepRead0000000000000",
+        "hiddenOnly": "vHiddenOnly00000000000",
+        "visibleOnly": "vVisibleOnly0000000000",
+        "writeOnly": "vWriteOnly000000000000",
+        "initVar": "vInitVar00000000000000",
+        "selfVar": "vSelfVar00000000000000",
+        "readFirst": "vReadFirst000000000000",
+        "sensedVar": "vSensedVar000000000000",
+        "looseVar": "vLooseVar0000000000000",
+        "orphanVar": "vOrphanVar000000000000",
+    }
+    L = {
+        "hiddenListOnly": "lHiddenOnly00000000000",
+        "visibleListOnly": "lVisibleOnly0000000000",
+        "readList": "lReadList0000000000000",
+        "initList": "lInitList0000000000000",
+        "appendList": "lAppendList00000000000",
+        "deleteOnlyList": "lDeleteOnly00000000000",
+        "readOnlyList": "lReadOnly000000000000",
+    }
+    B = {
+        "usedMsg": "bUsedMsg00000000000000",
+        "unusedMsg": "bUnusedMsg000000000000",
+    }
+
+    blocks = {}
+    comments = {}
+
+    def add_script(hat_id, specs, x=0, y=0):
+        blocks[hat_id] = blk("event_whenflagclicked", topLevel=True, x=x, y=y)
+        prev = hat_id
+        for i, (op, inputs, fields) in enumerate(specs):
+            bid = f"{hat_id}_{i}"
+            blocks[prev]["next"] = bid
+            blocks[bid] = blk(op, parent=prev, inputs=inputs, fields=fields)
+            prev = bid
+        return prev
+
+    def add_reporter(bid, op, parent, fields=None, inputs=None):
+        blocks[bid] = blk(op, parent=parent, fields=fields or {},
+                          inputs=inputs or {})
+
+    # 読み取り専用（書き込みなし）だが、コードから読まれるので保持される。
+    add_reporter("keepReadRep0000000000", "data_variable", "flagKeepRead000000_0",
+                 {"VARIABLE": ["keepRead", V["keepRead"]]})
+    add_script("flagKeepRead000000", [
+        ("looks_say", {"MESSAGE": [3, "keepReadRep0000000000", [10, ""]]}, {}),
+    ], x=0, y=0)
+
+    # 書き込みのみ（読み取りなし）。初期値は空白にできる。
+    add_script("flagWriteOnly000000", [
+        ("data_setvariableto", {"VALUE": [1, [10, "4"]]},
+         {"VARIABLE": ["writeOnly", V["writeOnly"]]}),
+    ], x=0, y=300)
+
+    # 読み取りより先に初期化。初期値を空白にできる。
+    add_reporter("initVarRep00000000000", "data_variable", "flagInit00000000000_1",
+                 {"VARIABLE": ["initVar", V["initVar"]]})
+    add_script("flagInit00000000000", [
+        ("data_setvariableto", {"VALUE": [1, [10, "0"]]},
+         {"VARIABLE": ["initVar", V["initVar"]]}),
+        ("looks_say", {"MESSAGE": [3, "initVarRep00000000000", [10, ""]]}, {}),
+    ], x=0, y=600)
+
+    # 自分自身を読む change は初期化ではない。
+    add_reporter("selfVarRep00000000000", "data_variable", "flagSelf00000000000_1",
+                 {"VARIABLE": ["selfVar", V["selfVar"]]})
+    add_script("flagSelf00000000000", [
+        ("data_changevariableby", {"VALUE": [1, [4, "1"]]},
+         {"VARIABLE": ["selfVar", V["selfVar"]]}),
+        ("looks_say", {"MESSAGE": [3, "selfVarRep00000000000", [10, ""]]}, {}),
+    ], x=0, y=900)
+
+    # 読み取りが先。初期値を保持。
+    add_reporter("readFirstRep000000000", "data_variable", "flagReadFirst0000000_0",
+                 {"VARIABLE": ["readFirst", V["readFirst"]]})
+    add_script("flagReadFirst0000000", [
+        ("looks_say", {"MESSAGE": [3, "readFirstRep000000000", [10, ""]]}, {}),
+        ("data_setvariableto", {"VALUE": [1, [10, "0"]]},
+         {"VARIABLE": ["readFirst", V["readFirst"]]}),
+    ], x=0, y=1200)
+
+    # sensing_of は PROPERTY 名で読む。表示ではないが読み取りなので保持。
+    blocks["senseMenu00000000000"] = blk(
+        "sensing_of_object_menu", parent="senseBlock000000000",
+        fields={"OBJECT": ["_stage_", None]}, shadow=True)
+    blocks["senseBlock000000000"] = blk(
+        "sensing_of", topLevel=True, x=300, y=300,
+        inputs={"OBJECT": [1, "senseMenu00000000000"]},
+        fields={"PROPERTY": ["sensedVar", None]})
+
+    # リストの読み取り・初期化・追加。
+    def add_list_read(bid, parent, lid, lname):
+        add_reporter(bid, "data_itemoflist", parent,
+                     {"LIST": [lname, lid]}, {"INDEX": [1, [7, "1"]]})
+
+    add_list_read("readListRep000000000", "flagReadList00000000_0", L["readList"], "readList")
+    add_script("flagReadList00000000", [
+        ("looks_say", {"MESSAGE": [3, "readListRep000000000", [10, ""]]}, {}),
+    ], x=0, y=1500)
+
+    add_list_read("initListRep000000000", "flagInitList00000000_1", L["initList"], "initList")
+    add_script("flagInitList00000000", [
+        ("data_deletealloflist", {}, {"LIST": ["initList", L["initList"]]}),
+        ("looks_say", {"MESSAGE": [3, "initListRep000000000", [10, ""]]}, {}),
+    ], x=0, y=1800)
+
+    add_list_read("appendListRep0000000", "flagAppendList000000_1", L["appendList"], "appendList")
+    add_script("flagAppendList000000", [
+        ("data_addtolist", {"ITEM": [1, [10, "new"]]},
+         {"LIST": ["appendList", L["appendList"]]}),
+        ("looks_say", {"MESSAGE": [3, "appendListRep0000000", [10, ""]]}, {}),
+    ], x=0, y=2100)
+
+    add_script("flagDeleteOnly000000", [
+        ("data_deletealloflist", {}, {"LIST": ["deleteOnlyList", L["deleteOnlyList"]]}),
+    ], x=0, y=2400)
+
+    add_list_read("readOnlyListRep00000", "flagReadOnlyList0000_0",
+                  L["readOnlyList"], "readOnlyList")
+    add_script("flagReadOnlyList0000", [
+        ("looks_say", {"MESSAGE": [3, "readOnlyListRep00000", [10, ""]]}, {}),
+    ], x=0, y=2700)
+
+    # 隠れ既定値（演算ブロックに覆われた go to の X 既定値）。
+    blocks["goReporter0000000000"] = blk(
+        "operator_add", parent="flagGo0000000000000_0",
+        inputs={"OPERAND1": [1, [10, "1"]], "OPERAND2": [1, [10, "2"]]})
+    add_script("flagGo0000000000000", [
+        ("motion_gotoxy",
+         {"X": [3, "goReporter0000000000", [4, "0"]],
+          "Y": [1, [4, "0"]]}, {}),
+    ], x=500, y=0)
+
+    # 到達不能: 呼び出されない定義、孤立ブロック、ルーズなスタック、
+    # 送信されない放送のレシーバー、使われないメッセージ。
+    blocks["deadDef000000000000"] = blk(
+        "procedures_definition", topLevel=True, x=0, y=3200,
+        next="deadBody000000000000",
+        inputs={"custom_block": [1, "deadProto0000000000"]})
+    blocks["deadProto0000000000"] = blk(
+        "procedures_prototype", parent="deadDef000000000000",
+        mutation={"proccode": "dead", "warp": False,
+                  "argumentids": "[]", "argumentnames": "[]",
+                  "argumentdefaults": "[]"})
+    blocks["deadBody000000000000"] = blk(
+        "motion_movesteps", parent="deadDef000000000000",
+        inputs={"STEPS": [1, [4, "1"]]})
+
+    blocks["orphan0000000000000"] = blk(
+        "data_setvariableto", inputs={"VALUE": [1, [10, "1"]]},
+        fields={"VARIABLE": ["orphanVar", V["orphanVar"]]})
+    blocks["looseStack0000000000"] = blk(
+        "data_setvariableto", topLevel=True, x=0, y=3500,
+        inputs={"VALUE": [1, [10, "1"]]},
+        fields={"VARIABLE": ["looseVar", V["looseVar"]]})
+
+    blocks["recvNoSendHat00000000"] = blk(
+        "event_whenbroadcastreceived", topLevel=True, x=0, y=3800,
+        next="recvNoSendBody00000",
+        fields={"BROADCAST_OPTION": ["unusedMsg", B["unusedMsg"]]})
+    blocks["recvNoSendBody00000"] = blk(
+        "motion_movesteps", parent="recvNoSendHat00000000",
+        inputs={"STEPS": [1, [4, "1"]]})
+
+    blocks["recvKeptHat0000000000"] = blk(
+        "event_whenbroadcastreceived", topLevel=True, x=0, y=4100,
+        next="recvKeptBody00000000",
+        fields={"BROADCAST_OPTION": ["usedMsg", B["usedMsg"]]})
+    blocks["recvKeptBody00000000"] = blk(
+        "motion_movesteps", parent="recvKeptHat0000000000",
+        inputs={"STEPS": [1, [4, "1"]]})
+
+    add_script("flagSendKept00000000", [
+        ("event_broadcast",
+         {"BROADCAST_INPUT": [1, [11, "usedMsg", B["usedMsg"]]]}, {}),
+    ], x=0, y=4400)
+
+    comments["commentOrphan000000"] = {
+        "blockId": "orphan0000000000000", "x": 0, "y": 0,
+        "width": 100, "height": 50, "minimized": False, "text": "orphan"}
+    comments["commentKept00000000"] = {
+        "blockId": "flagKeepRead000000_0", "x": 0, "y": 0,
+        "width": 100, "height": 50, "minimized": False, "text": "kept"}
+    # ワークスペースに直接置かれたコメントはスクリプトに属さないため保持する。
+    comments["commentFree00000000"] = {
+        "blockId": None, "x": 300, "y": 0,
+        "width": 120, "height": 60, "minimized": False, "text": "free note"}
+
+    stage = {
+        "isStage": True, "name": "Stage",
+        "variables": {
+            V["keepRead"]: ["keepRead", 10],
+            V["hiddenOnly"]: ["hiddenOnly", 11],
+            V["visibleOnly"]: ["visibleOnly", 12],
+            V["writeOnly"]: ["writeOnly", 13],
+            V["initVar"]: ["initVar", 99],
+            V["selfVar"]: ["selfVar", 5],
+            V["readFirst"]: ["readFirst", 6],
+            V["sensedVar"]: ["sensedVar", 7],
+            V["looseVar"]: ["looseVar", 8],
+            V["orphanVar"]: ["orphanVar", 9],
+        },
+        "lists": {
+            L["hiddenListOnly"]: ["hiddenListOnly", [1]],
+            L["visibleListOnly"]: ["visibleListOnly", [2]],
+            L["readList"]: ["readList", ["r"]],
+            L["initList"]: ["initList", ["x"]],
+            L["appendList"]: ["appendList", ["y"]],
+            L["deleteOnlyList"]: ["deleteOnlyList", ["z"]],
+            L["readOnlyList"]: ["readOnlyList", ["q"]],
+        },
+        "broadcasts": {
+            B["usedMsg"]: ["usedMsg"],
+            B["unusedMsg"]: ["unusedMsg"],
+        },
+        "blocks": blocks, "comments": comments,
+        "costumes": [], "sounds": [],
+    }
+
+    # 同一コードを2箇所に置く（短い列もサイズが減れば抽出対象）。
+    dup_blocks = {}
+    for si in range(2):
+        hat = f"dupHat{si}"
+        dup_blocks[hat] = blk("event_whenflagclicked", topLevel=True,
+                              x=0, y=si * 400)
+        prev = hat
+        for j in range(12):
+            bid = f"dup{si}_{j}"
+            dup_blocks[prev]["next"] = bid
+            dup_blocks[bid] = blk("motion_movesteps", parent=prev,
+                                  inputs={"STEPS": [1, [4, "10"]]})
+            prev = bid
+    dup_sprite = {
+        "isStage": False, "name": "DupSprite",
+        "variables": {}, "lists": {}, "broadcasts": {},
+        "blocks": dup_blocks, "comments": {}, "costumes": [], "sounds": [],
+    }
+
+    monitors = [
+        {"id": V["hiddenOnly"], "mode": "default", "opcode": "data_variable",
+         "params": {"VARIABLE": "hiddenOnly"}, "spriteName": None,
+         "visible": False, "x": 0, "y": 0},
+        {"id": L["hiddenListOnly"], "mode": "list", "opcode": "data_listcontents",
+         "params": {"LIST": "hiddenListOnly"}, "spriteName": None,
+         "visible": False, "x": 0, "y": 0},
+        {"id": V["visibleOnly"], "mode": "default", "opcode": "data_variable",
+         "params": {"VARIABLE": "visibleOnly"}, "spriteName": None,
+         "visible": True, "x": 0, "y": 100},
+        {"id": L["visibleListOnly"], "mode": "list", "opcode": "data_listcontents",
+         "params": {"LIST": "visibleListOnly"}, "spriteName": None,
+         "visible": True, "x": 0, "y": 200},
+    ]
+    return {
+        "targets": [stage, dup_sprite],
+        "monitors": monitors,
+        "extensions": [],
+        "meta": {"semver": "3.0.0"},
+    }
+
+
+def build_warp_duplicate_sample():
+    """warp 定義内の同一コードは抽出してはならない（画面更新が変わる）。"""
+    def blk(opcode, **kw):
+        b = {"opcode": opcode, "next": None, "parent": None, "inputs": {},
+             "fields": {}, "shadow": False, "topLevel": False}
+        b.update(kw)
+        return b
+
+    blocks = {}
+    blocks["warpDef00000000000"] = blk(
+        "procedures_definition", topLevel=True, x=0, y=0, next="warpBody0",
+        inputs={"custom_block": [1, "warpProto0000000000"]})
+    blocks["warpProto0000000000"] = blk(
+        "procedures_prototype", parent="warpDef00000000000", shadow=True,
+        mutation={"tagName": "mutation", "children": [],
+                  "proccode": "warpy", "argumentids": "[]",
+                  "argumentnames": "[]", "argumentdefaults": "[]",
+                  "warp": "true"})
+    prev = "warpDef00000000000"
+    for i in range(12):
+        bid = f"warpBody{i}"
+        blocks[prev]["next"] = bid
+        blocks[bid] = blk("motion_movesteps", parent=prev,
+                          inputs={"STEPS": [1, [4, "1"]]})
+        prev = bid
+
+    # 同じ本体を持つ warp 定義をもう 1 つ置く。warp 同士なら安全に抽出できる。
+    blocks["warpDefB0000000000"] = blk(
+        "procedures_definition", topLevel=True, x=0, y=200, next="warpBBody0",
+        inputs={"custom_block": [1, "warpProtoB000000000"]})
+    blocks["warpProtoB000000000"] = blk(
+        "procedures_prototype", parent="warpDefB0000000000", shadow=True,
+        mutation={"tagName": "mutation", "children": [],
+                  "proccode": "warpy", "argumentids": "[]",
+                  "argumentnames": "[]", "argumentdefaults": "[]",
+                  "warp": "true"})
+    prev = "warpDefB0000000000"
+    for i in range(12):
+        bid = f"warpBBody{i}"
+        blocks[prev]["next"] = bid
+        blocks[bid] = blk("motion_movesteps", parent=prev,
+                          inputs={"STEPS": [1, [4, "1"]]})
+        prev = bid
+
+    # 同じ 12 ブロックが通常スクリプトにも 1 回だけ存在する。
+    blocks["normalHat0000000000"] = blk("event_whenflagclicked",
+                                        topLevel=True, x=0, y=400)
+    prev = "normalHat0000000000"
+    for i in range(12):
+        bid = f"normalBody{i}"
+        blocks[prev]["next"] = bid
+        blocks[bid] = blk("motion_movesteps", parent=prev,
+                          inputs={"STEPS": [1, [4, "1"]]})
+        prev = bid
+
+    # 呼び出しがないと定義自体が到達不能で消えるため、呼び出しを置く。
+    blocks["callHat000000000000"] = blk("event_whenflagclicked",
+                                        topLevel=True, x=0, y=800,
+                                        next="callWarp00000000000")
+    blocks["callWarp00000000000"] = blk(
+        "procedures_call", parent="callHat000000000000",
+        mutation={"tagName": "mutation", "children": [],
+                  "proccode": "warpy", "argumentids": "[]",
+                  "warp": "false"})
+
+    return {
+        "targets": [{
+            "isStage": True, "name": "Stage",
+            "variables": {}, "lists": {}, "broadcasts": {},
+            "blocks": blocks, "comments": {}, "costumes": [], "sounds": [],
+        }],
+        "monitors": [], "extensions": [], "meta": {"semver": "3.0.0"},
+    }
+
+
+def build_argument_duplicate_sample(mode="same_def"):
+    """引数付き定義内の重複ブロックを、引数を引き継ぐ定義へ抽出できるか検証する。
+
+    mode:
+      ``same_def``       - 同じ定義内の重複で x / flag を使用（抽出される）
+      ``different_defs`` - 別々の定義で同じ引数名を使用（定義が違うので抽出しない）
+      ``no_args``        - 引数付き定義内だが、重複コードは引数を使用しない（抽出される）
+      ``undeclared``     - 定義にない引数名のレポーターを使用（抽出しない）
+    """
+    def blk(opcode, **kw):
+        b = {"opcode": opcode, "next": None, "parent": None, "inputs": {},
+             "fields": {}, "shadow": False, "topLevel": False}
+        b.update(kw)
+        return b
+
+    VID_RES = "gVres00000000000000"
+    VID_CNT = "gVcnt00000000000000"
+    blocks = {}
+    counter = [0]
+
+    def nid(prefix="argN"):
+        counter[0] += 1
+        return f"{prefix}{counter[0]:03d}"
+
+    def make_chain(prev, x_name, flag_name, use_x, use_flag):
+        seq = []
+        state = {"prev": prev}
+
+        def emit(opcode, inputs=None, fields=None):
+            bid = nid()
+            blocks[bid] = blk(opcode, parent=state["prev"],
+                              inputs=inputs or {}, fields=fields or {})
+            if (isinstance(state["prev"], str)
+                    and state["prev"] in blocks):
+                blocks[state["prev"]]["next"] = bid
+            state["prev"] = bid
+            seq.append(bid)
+            return bid
+
+        def nested(opcode, parent, inputs=None, fields=None):
+            bid = nid()
+            blocks[bid] = blk(opcode, parent=parent, inputs=inputs or {},
+                              fields=fields or {})
+            return bid
+
+        def arg_reporter(parent, name, is_bool=False):
+            bid = nid()
+            blocks[bid] = blk(
+                ("argument_reporter_boolean" if is_bool
+                 else "argument_reporter_string_number"),
+                parent=parent, fields={"VALUE": [name, None]})
+            return bid
+
+        def set_res(addend):
+            body = emit("data_setvariableto",
+                        fields={"VARIABLE": ["res", VID_RES]})
+            if use_x:
+                add = nested("operator_add", body, inputs={
+                    "NUM1": [1, [4, "0"]],
+                    "NUM2": [1, [4, str(addend)]]})
+                rep = arg_reporter(add, x_name)
+                blocks[add]["inputs"]["NUM1"] = [3, rep, [4, ""]]
+                blocks[body]["inputs"]["VALUE"] = [3, add, [10, ""]]
+            else:
+                blocks[body]["inputs"]["VALUE"] = [1, [10, str(addend)]]
+
+        def change_cnt():
+            emit("data_changevariableby",
+                 inputs={"VALUE": [1, [4, "1"]]},
+                 fields={"VARIABLE": ["cnt", VID_CNT]})
+
+        def if_flag(amount):
+            body = emit("control_if")
+            if use_flag:
+                rep = arg_reporter(body, flag_name, True)
+                blocks[body]["inputs"]["CONDITION"] = [2, rep]
+            else:
+                eq = nested("operator_equals", body, inputs={
+                    "OPERAND1": [1, [4, "1"]],
+                    "OPERAND2": [1, [4, "1"]]})
+                blocks[body]["inputs"]["CONDITION"] = [2, eq]
+            sub = nested("data_changevariableby", body,
+                         inputs={"VALUE": [1, [4, str(amount)]]},
+                         fields={"VARIABLE": ["res", VID_RES]})
+            blocks[body]["inputs"]["SUBSTACK"] = [2, sub]
+
+        set_res(1)
+        change_cnt()
+        if_flag(10)
+        change_cnt()
+        set_res(2)
+        if_flag(20)
+        change_cnt()
+        set_res(3)
+        if_flag(30)
+        change_cnt()
+        return seq[0], seq[-1]
+
+    def add_def(prefix, proccode, args, x_name, flag_name,
+                use_x, use_flag, chain_count=1):
+        def_id = f"{prefix}Def"
+        proto_id = f"{prefix}Proto"
+        blocks[def_id] = blk("procedures_definition", topLevel=True,
+                             x=0, y=100 + counter[0] * 20,
+                             inputs={"custom_block": [1, proto_id]})
+        arg_ids = [a[0] for a in args]
+        blocks[proto_id] = blk(
+            "procedures_prototype", parent=def_id, shadow=True,
+            mutation={
+                "tagName": "mutation", "children": [],
+                "proccode": proccode,
+                "argumentids": json.dumps(arg_ids, separators=(",", ":")),
+                "argumentnames": json.dumps([a[1] for a in args],
+                                            ensure_ascii=False,
+                                            separators=(",", ":")),
+                "argumentdefaults": json.dumps([a[2] for a in args],
+                                               separators=(",", ":")),
+                "warp": "false",
+            })
+        prev = def_id
+        for _ in range(chain_count):
+            _, prev = make_chain(prev, x_name, flag_name, use_x, use_flag)
+        return def_id
+
+    hat = "argHat0001"
+    blocks[hat] = blk("event_whenflagclicked", topLevel=True, x=400, y=0)
+    prev = hat
+
+    def add_call(proccode, arg_ids, values):
+        nonlocal prev
+        call = nid("argCall")
+        inputs = {}
+        for aid, (kind, value) in zip(arg_ids, values):
+            if kind == "bool":
+                eq = nid("argEq")
+                blocks[eq] = blk("operator_equals", parent=call, inputs={
+                    "OPERAND1": [1, [4, str(value[0])]],
+                    "OPERAND2": [1, [4, str(value[1])]]})
+                inputs[aid] = [2, eq]
+            else:
+                inputs[aid] = [1, [10, str(value)]]
+        blocks[call] = blk(
+            "procedures_call", parent=prev, inputs=inputs,
+            mutation={"tagName": "mutation", "children": [],
+                      "proccode": proccode,
+                      "argumentids": json.dumps(arg_ids, separators=(",", ":")),
+                      "warp": "false"})
+        blocks[prev]["next"] = call
+        prev = call
+
+    if mode == "same_def":
+        add_def("sameA", "proc %s %b",
+                [("AIDX", "x", ""), ("AIDF", "flag", False)],
+                "x", "flag", True, True, chain_count=2)
+        add_call("proc %s %b", ["AIDX", "AIDF"], [("text", 5), ("bool", (1, 1))])
+        add_call("proc %s %b", ["AIDX", "AIDF"], [("text", 2), ("bool", (1, 2))])
+    elif mode == "different_defs":
+        add_def("diffA", "f %s", [("AIDX", "x", "")],
+                "x", "flag", True, False)
+        add_def("diffB", "g %s", [("BIDX", "x", "")],
+                "x", "flag", True, False)
+        add_call("f %s", ["AIDX"], [("text", 1)])
+        add_call("g %s", ["BIDX"], [("text", 2)])
+    elif mode == "no_args":
+        add_def("noaA", "f %s", [("AIDX", "unused", "")],
+                "x", "flag", False, False)
+        add_def("noaB", "g %s", [("BIDX", "unused", "")],
+                "x", "flag", False, False)
+        add_call("f %s", ["AIDX"], [("text", 1)])
+        add_call("g %s", ["BIDX"], [("text", 2)])
+    elif mode == "undeclared":
+        add_def("undA", "f", [], "x", "flag", True, False,
+                chain_count=2)
+        add_call("f", [], [])
+    else:
+        raise ValueError(mode)
+
+    return {
+        "targets": [{
+            "isStage": True, "name": "Stage",
+            "variables": {VID_RES: ["res", 0], VID_CNT: ["cnt", 0]},
+            "lists": {}, "broadcasts": {},
+            "blocks": blocks, "comments": {},
+            "costumes": [{
+                "name": "backdrop1", "dataFormat": "svg",
+                "assetId": "cd21514d0531fdffb22204e0ec5ed84a",
+                "md5ext": "cd21514d0531fdffb22204e0ec5ed84a.svg",
+                "rotationCenterX": 240, "rotationCenterY": 180,
+            }],
+            "sounds": [], "currentCostume": 0, "volume": 100, "tempo": 60,
+            "videoTransparency": 50, "videoState": "on",
+            "textToSpeechLanguage": None, "layerOrder": 0,
+        }],
+        "monitors": [], "extensions": [], "meta": {"semver": "3.0.0"},
+    }
+
+
+def build_reporter_duplicate_sample():
+    """レポーター（演算ブロック）自体を重複抽出してはならない。
+
+    レポーターを新しい定義の本体へ移すと「積み木ブロック」として扱われ、
+    スクリプトのコンパイルに失敗する。同じ演算サブツリーが5回現れても、
+    スタック列だけを抽出対象にする必要がある。
+    """
+    def blk(opcode, **kw):
+        b = {"opcode": opcode, "next": None, "parent": None, "inputs": {},
+             "fields": {}, "shadow": False, "topLevel": False}
+        b.update(kw)
+        return b
+
+    var_ids = {f"v{i}": f"repVar{i:016d}" for i in range(5)}
+    src1_id = "repSrc1aaaaaaaaaaaa"
+    src2_id = "repSrc2aaaaaaaaaaaa"
+    variables = {vid: [f"v{i}", 0] for i, vid in
+                 ((int(k[1:]), v) for k, v in var_ids.items())}
+    variables[src1_id] = ["src1", 1]
+    variables[src2_id] = ["src2", 2]
+
+    blocks = {}
+    hat = "repHat00000000000000"
+    blocks[hat] = blk("event_whenflagclicked", topLevel=True, x=0, y=0)
+    prev = hat
+    for i in range(5):
+        sid = f"repSet{i:016d}"
+        blocks[sid] = blk("data_setvariableto", parent=prev,
+                          fields={"VARIABLE": [f"v{i}", var_ids[f"v{i}"]]})
+        blocks[prev]["next"] = sid
+        prev = sid
+
+        aid = f"repAdd{i:016d}"
+        blocks[aid] = blk("operator_add", parent=sid, inputs={
+            "NUM1": [3, f"repR1{i:016d}", [4, ""]],
+            "NUM2": [3, f"repR2{i:016d}", [4, ""]],
+        })
+        blocks[sid]["inputs"]["VALUE"] = [3, aid, [10, ""]]
+        blocks[f"repR1{i:016d}"] = blk(
+            "data_variable", parent=aid,
+            fields={"VARIABLE": ["src1", src1_id]})
+        blocks[f"repR2{i:016d}"] = blk(
+            "data_variable", parent=aid,
+            fields={"VARIABLE": ["src2", src2_id]})
+
+    return {
+        "targets": [{
+            "isStage": True, "name": "Stage",
+            "variables": variables, "lists": {}, "broadcasts": {},
+            "blocks": blocks, "comments": {},
+            "costumes": [{
+                "name": "backdrop1", "dataFormat": "svg",
+                "assetId": "cd21514d0531fdffb22204e0ec5ed84a",
+                "md5ext": "cd21514d0531fdffb22204e0ec5ed84a.svg",
+                "rotationCenterX": 240, "rotationCenterY": 180,
+            }],
+            "sounds": [], "currentCostume": 0, "volume": 100, "tempo": 60,
+            "videoTransparency": 50, "videoState": "on",
+            "textToSpeechLanguage": None, "layerOrder": 0,
+        }],
+        "monitors": [], "extensions": [], "meta": {"semver": "3.0.0"},
+    }
+
+
+def build_near_duplicate_sample(mode="literals"):
+    """ほぼ同じブロックを、リテラル差分だけ引数にして共有できるか検証する。
+
+    mode:
+      ``literals`` - 3 つの goto が数値リテラルだけ異なる（抽出される）
+      ``field``    - 数値リテラルに加えて三角関数のプルダウンも異なる
+                     （フィールドは引数化できないため抽出しない）
+    """
+    def blk(opcode, **kw):
+        b = {"opcode": opcode, "next": None, "parent": None, "inputs": {},
+             "fields": {}, "shadow": False, "topLevel": False}
+        b.update(kw)
+        return b
+
+    blocks = {}
+    hat = "nearHat00000000000"
+    blocks[hat] = blk("event_whenflagclicked", topLevel=True, x=0, y=0)
+    prev = hat
+
+    def make_chain(kind, idx, lits, mathop=None):
+        leaf = f"near{kind}Leaf{idx:02d}"
+        blocks[leaf] = blk("sensing_mousex" if kind == "X"
+                           else "sensing_mousey")
+        cur = leaf
+        if mathop is not None:
+            mid = f"near{kind}Math{idx:02d}"
+            blocks[mid] = blk("operator_mathop",
+                              fields={"OPERATOR": [mathop, None]},
+                              inputs={"NUM": [3, leaf, [4, ""]]})
+            blocks[leaf]["parent"] = mid
+            cur = mid
+        for j, lit in enumerate(lits):
+            aid = f"near{kind}Add{idx:02d}_{j}"
+            blocks[aid] = blk("operator_add", inputs={
+                "NUM1": [3, cur, [4, ""]],
+                "NUM2": [1, [4, lit]],
+            })
+            blocks[cur]["parent"] = aid
+            cur = aid
+        return cur
+
+    def add_gotoxy(idx, xs, ys, mathop=None):
+        nonlocal prev
+        gid = f"nearGo{idx:02d}"
+        blocks[gid] = blk("motion_gotoxy", parent=prev)
+        blocks[prev]["next"] = gid
+        prev = gid
+        xcur = make_chain("X", idx, xs, mathop)
+        ycur = make_chain("Y", idx, ys)
+        blocks[gid]["inputs"] = {"X": [3, xcur, [4, ""]],
+                                 "Y": [3, ycur, [4, ""]]}
+        blocks[xcur]["parent"] = gid
+        blocks[ycur]["parent"] = gid
+
+    if mode == "field":
+        add_gotoxy(0, ["1", "2", "3", "4", "5"], ["6", "7", "8"],
+                   mathop="sin")
+        add_gotoxy(1, ["1", "2", "3", "4", "9"], ["6", "7", "10"],
+                   mathop="cos")
+    else:
+        add_gotoxy(0, ["1", "2", "3", "4", "5"], ["6", "7", "8"])
+        add_gotoxy(1, ["1", "2", "3", "4", "5"], ["6", "7", "9"])
+        add_gotoxy(2, ["10", "2", "3", "4", "5"], ["6", "7", "8"])
+
+    return {
+        "targets": [{
+            "isStage": True, "name": "Stage",
+            "variables": {}, "lists": {}, "broadcasts": {},
+            "blocks": blocks, "comments": {},
+            "costumes": [{
+                "name": "backdrop1", "dataFormat": "svg",
+                "assetId": "cd21514d0531fdffb22204e0ec5ed84a",
+                "md5ext": "cd21514d0531fdffb22204e0ec5ed84a.svg",
+                "rotationCenterX": 240, "rotationCenterY": 180,
+            }],
+            "sounds": [], "currentCostume": 0, "volume": 100, "tempo": 60,
+            "videoTransparency": 50, "videoState": "on",
+            "textToSpeechLanguage": None, "layerOrder": 0,
+        }],
+        "monitors": [], "extensions": [], "meta": {"semver": "3.0.0"},
+    }
+
+
+def build_simplify_sample():
+    """New simplification passes: folding, no-ops, inlining, propagation."""
+    def blk(opcode, **kw):
+        b = {"opcode": opcode, "next": None, "parent": None, "inputs": {},
+             "fields": {}, "shadow": False, "topLevel": False}
+        b.update(kw)
+        return b
+
+    def mut(code, warp="false", args="[]"):
+        return {"tagName": "mutation", "children": [], "proccode": code,
+                "argumentids": args, "argumentnames": args,
+                "argumentdefaults": args, "warp": warp}
+
+    V_NEVER = "sNever00000000000000"
+    V_DOMI = "sDomi000000000000000"
+    B_DEAD = "sDead000000000000000"
+    B_LIVE = "sLive000000000000000"
+    blocks = {}
+
+    def add_script(hat_id, x, y):
+        blocks[hat_id] = blk("event_whenflagclicked", topLevel=True, x=x, y=y)
+        return hat_id
+
+    def append(prev, bid, opcode, inputs=None, fields=None, mutation=None):
+        blocks[prev]["next"] = bid
+        blocks[bid] = blk(opcode, parent=prev, inputs=inputs or {},
+                          fields=fields or {})
+        if mutation is not None:
+            blocks[bid]["mutation"] = mutation
+        return bid
+
+    # --- numeric folding ---
+    add_script("foldHat000000000000", 0, 0)
+    prev = "foldHat000000000000"
+    fold_cases = [
+        ("operator_divide", {"NUM1": [1, [4, "1"]], "NUM2": [1, [4, "0"]]}),
+        ("operator_divide", {"NUM1": [1, [4, "-1"]], "NUM2": [1, [4, "0"]]}),
+        ("operator_divide", {"NUM1": [1, [4, "0"]], "NUM2": [1, [4, "0"]]}),
+        ("operator_mod", {"NUM1": [1, [4, "10"]], "NUM2": [1, [4, "3"]]}),
+        ("operator_round", {"NUM": [1, [4, "-0.5"]]}),
+        ("operator_mathop", {"NUM": [1, [4, "9"]]}),
+    ]
+    for i, (op, inputs) in enumerate(fold_cases):
+        rep = f"foldRep{i:014d}"
+        fields = {"OPERATOR": ["sqrt", None]} if op == "operator_mathop" else {}
+        blocks[rep] = blk(op, parent=prev, inputs=inputs, fields=fields)
+        say = f"foldSay{i:014d}"
+        prev = append(prev, say, "looks_say",
+                      inputs={"MESSAGE": [3, rep, [10, ""]]})
+        blocks[rep]["parent"] = say
+
+    # --- if/else without an else branch ---
+    add_script("ifHat00000000000000", 0, 400)
+    blocks["ifCond000000000000"] = blk(
+        "operator_equals", parent="ifBlock000000000000",
+        inputs={"OPERAND1": [1, [4, "1"]], "OPERAND2": [1, [4, "1"]]})
+    blocks["ifBlock000000000000"] = blk(
+        "control_if_else", parent="ifHat00000000000000",
+        inputs={"CONDITION": [2, "ifCond000000000000"],
+                "SUBSTACK": [2, "ifBody0000000000000"]})
+    blocks["ifHat00000000000000"]["next"] = "ifBlock000000000000"
+    blocks["ifBody0000000000000"] = blk(
+        "motion_movesteps", parent="ifBlock000000000000",
+        inputs={"STEPS": [1, [4, "1"]]})
+
+    # --- no-op custom block ---
+    blocks["noopDef000000000000"] = blk(
+        "procedures_definition", topLevel=True, x=300, y=0,
+        next="noopStop00000000000",
+        inputs={"custom_block": [1, "noopProto0000000000"]})
+    blocks["noopProto0000000000"] = blk(
+        "procedures_prototype", parent="noopDef000000000000", shadow=True,
+        mutation=mut("noop"))
+    blocks["noopStop00000000000"] = blk(
+        "control_stop", parent="noopDef000000000000",
+        fields={"STOP_OPTION": ["this script", None]},
+        mutation={"tagName": "mutation", "children": [], "hasnext": "false"})
+    add_script("callHat0000000000000", 300, 300)
+    prev = append("callHat0000000000000", "noopCall0000000000",
+                  "procedures_call", mutation=mut("noop"))
+    append(prev, "callTurn00000000000", "motion_turnright",
+           inputs={"DEGREES": [1, [4, "15"]]})
+
+    # --- single-call inlining (non-warp only) ---
+    blocks["oneDef0000000000000"] = blk(
+        "procedures_definition", topLevel=True, x=600, y=0,
+        next="oneBody00000000000",
+        inputs={"custom_block": [1, "oneProto00000000000"]})
+    blocks["oneProto00000000000"] = blk(
+        "procedures_prototype", parent="oneDef0000000000000", shadow=True,
+        mutation=mut("one"))
+    blocks["oneBody00000000000"] = blk(
+        "motion_movesteps", parent="oneDef0000000000000",
+        inputs={"STEPS": [1, [4, "2"]]})
+    add_script("oneHat0000000000000", 600, 300)
+    prev = append("oneHat0000000000000", "oneCall00000000000",
+                  "procedures_call", mutation=mut("one"))
+    append(prev, "oneTurn00000000000", "motion_turnleft",
+           inputs={"DEGREES": [1, [4, "5"]]})
+    blocks["warpDef000000000000"] = blk(
+        "procedures_definition", topLevel=True, x=900, y=0,
+        next="warpBody00000000000",
+        inputs={"custom_block": [1, "warpProto0000000000"]})
+    blocks["warpProto0000000000"] = blk(
+        "procedures_prototype", parent="warpDef000000000000", shadow=True,
+        mutation=mut("warpone", warp="true"))
+    blocks["warpBody00000000000"] = blk(
+        "motion_movesteps", parent="warpDef000000000000",
+        inputs={"STEPS": [1, [4, "3"]]})
+    add_script("warpHat0000000000000", 900, 300)
+    append("warpHat0000000000000", "warpCall0000000000",
+           "procedures_call", mutation=mut("warpone"))
+
+    # --- no-op broadcast receiver and sender ---
+    blocks["deadRecvHat000000000"] = blk(
+        "event_whenbroadcastreceived", topLevel=True, x=1200, y=0,
+        fields={"BROADCAST_OPTION": ["deadMsg", B_DEAD]})
+    add_script("sendHat000000000000", 1200, 300)
+    prev = append("sendHat000000000000", "deadSend0000000000",
+                  "event_broadcast",
+                  inputs={"BROADCAST_INPUT": [1, [11, "deadMsg", B_DEAD]]})
+    append(prev, "liveSend0000000000", "event_broadcast",
+           inputs={"BROADCAST_INPUT": [1, [11, "liveMsg", B_LIVE]]})
+    blocks["liveRecvHat000000000"] = blk(
+        "event_whenbroadcastreceived", topLevel=True, x=1200, y=500,
+        next="liveBody00000000000",
+        fields={"BROADCAST_OPTION": ["liveMsg", B_LIVE]})
+    blocks["liveBody00000000000"] = blk(
+        "motion_movesteps", parent="liveRecvHat000000000",
+        inputs={"STEPS": [1, [4, "4"]]})
+
+    # --- constant propagation ---
+    add_script("constHat000000000000", 1500, 0)
+    prev = "constHat000000000000"
+    for i in range(2):
+        say = f"neverSay{i:013d}"
+        prev = append(prev, say, "looks_say", inputs={
+            "MESSAGE": [3, [12, "never", V_NEVER], [10, ""]]})
+    add_script("domiHat1000000000000", 1500, 300)
+    prev = append("domiHat1000000000000", "domiSet00000000000",
+                  "data_setvariableto", inputs={"VALUE": [1, [4, "7"]]},
+                  fields={"VARIABLE": ["domi", V_DOMI]})
+    append(prev, "domiSay10000000000", "looks_say", inputs={
+        "MESSAGE": [3, [12, "domi", V_DOMI], [10, ""]]})
+    add_script("domiHat2000000000000", 1500, 600)
+    append("domiHat2000000000000", "domiSay20000000000", "looks_say", inputs={
+        "MESSAGE": [3, [12, "domi", V_DOMI], [10, ""]]})
+
+    return {
+        "targets": [{
+            "isStage": True, "name": "Stage",
+            "variables": {V_NEVER: ["never", "K"], V_DOMI: ["domi", 5]},
+            "lists": {}, "broadcasts": {B_DEAD: "deadMsg", B_LIVE: "liveMsg"},
+            "blocks": blocks, "comments": {},
+            "costumes": [{
+                "name": "backdrop1", "dataFormat": "svg",
+                "assetId": "cd21514d0531fdffb22204e0ec5ed84a",
+                "md5ext": "cd21514d0531fdffb22204e0ec5ed84a.svg",
+                "rotationCenterX": 240, "rotationCenterY": 180,
+            }],
+            "sounds": [], "currentCostume": 0, "volume": 100, "tempo": 60,
+            "videoTransparency": 50, "videoState": "on",
+            "textToSpeechLanguage": None, "layerOrder": 0,
+        }],
+        "monitors": [], "extensions": [], "meta": {"semver": "3.0.0"},
+    }
 
 
 def validate_project(project):
@@ -440,7 +1305,9 @@ def main():
                        "parent": None,
                        "inputs": {"OPERAND1": [3, hot, [4, "0"]]},
                        "fields": {}, "shadow": False, "topLevel": False}
-    c6 = Compressor(Options())
+    c6 = Compressor(Options(remove_unreachable=False,
+                            clear_initial_values=False,
+                            extract_duplicates=False))
     q6 = c6.run(p6)
     qb6 = q6["targets"][1]["blocks"]
     hot_refs = {v["inputs"]["OPERAND1"][1]
@@ -471,9 +1338,11 @@ def main():
     lnames7 = [v[0] for v in slists7.values()]
     assert "\u2601 ghostc" not in names7, f"未使用クラウド変数が残っている: {names7}"
     assert "ghostlist" not in lnames7, "未使用リストが残っている"
-    # 構成: score + ☁cloudvar + local + ghost(モニター参照で保持) / mylist
+    # 構成: score + ☁cloudvar + local + ghost(モニター参照で保持) / mylist は
+    # 非表示モニターだけで参照され、書き込み・表示もないため削除される。
     assert len(svars7) == 4, f"変数数が不正: {names7}"
-    assert len(slists7) == 1, f"リスト数が不正: {lnames7}"
+    assert "mylist" not in lnames7, f"非表示モニターだけのリストが残っている: {lnames7}"
+    assert len(slists7) == 0, f"リスト数が不正: {lnames7}"
     assert c7.stats["vars_removed"] >= 1 and c7.stats["lists_removed"] >= 1
     errs7 = validate_project(q7)
     assert not errs7, errs7
@@ -505,8 +1374,14 @@ def main():
     st7b["blocks"]["arrVarReporter00000"] = [12, "arrVar", ARR_VID, 10, 20]
     st7b["blocks"]["arrListReporter0000"] = [13, "arrList", ARR_LID, 10, 50]
     # IDが欠落/不整合でもVMは名前で解決するため、名前側の定義を残す必要がある
+    st7b["blocks"]["staleHat00000000000"] = {
+        "opcode": "event_whenflagclicked", "next": "staleRef00000000000",
+        "parent": None, "inputs": {}, "fields": {}, "shadow": False,
+        "topLevel": True, "x": 400, "y": 400,
+    }
     st7b["blocks"]["staleRef00000000000"] = {
-        "opcode": "data_setvariableto", "next": None, "parent": None,
+        "opcode": "data_setvariableto", "next": None,
+        "parent": "staleHat00000000000",
         "inputs": {"VALUE": [1, [10, "1"]]},
         "fields": {"VARIABLE": ["staleVar", "missing-id"]},
         "shadow": False, "topLevel": False,
@@ -538,7 +1413,7 @@ def main():
         f"単独リストレポーターが追従していない: {arr_l}"
     assert len(svars7b) == 6, \
         f"単独レポーター/名前参照の変数が削除された: {[v[0] for v in svars7b.values()]}"
-    assert len(slists7b) == 2, \
+    assert len(slists7b) == 1, \
         f"単独レポーター/モニターのリストが削除された: {[v[0] for v in slists7b.values()]}"
     var_field_ids = {b["fields"]["VARIABLE"][1]
                      for b in q7b["targets"][0]["blocks"].values()
@@ -601,7 +1476,462 @@ def main():
     assert not errs9, errs9
     print("[OK] 重複proccode定義の扱い（改名せず衝突なし）")
 
-    # ---------- 8) 実ファイル: sb3compressor.sb3 ----------
+    # ---------- 8) 新機能: 未表示ストア・初期値・到達不能・重複・隠れ既定値 ----------
+    p10 = json.loads(json.dumps(build_feature_sample()))
+    c10 = Compressor(Options())
+    q10 = c10.run(p10)
+    sv10, sl10, sb10 = flatten(q10)
+    stage10, dup10 = q10["targets"][0], q10["targets"][1]
+    st10 = c10.stats
+
+    V10 = {
+        "keepRead": "vKeepRead0000000000000",
+        "hiddenOnly": "vHiddenOnly00000000000",
+        "visibleOnly": "vVisibleOnly0000000000",
+        "writeOnly": "vWriteOnly000000000000",
+        "initVar": "vInitVar00000000000000",
+        "selfVar": "vSelfVar00000000000000",
+        "readFirst": "vReadFirst000000000000",
+        "sensedVar": "vSensedVar000000000000",
+        "looseVar": "vLooseVar0000000000000",
+        "orphanVar": "vOrphanVar000000000000",
+    }
+    L10 = {
+        "hiddenListOnly": "lHiddenOnly00000000000",
+        "visibleListOnly": "lVisibleOnly0000000000",
+        "readList": "lReadList0000000000000",
+        "initList": "lInitList0000000000000",
+        "appendList": "lAppendList00000000000",
+        "deleteOnlyList": "lDeleteOnly00000000000",
+        "readOnlyList": "lReadOnly000000000000",
+    }
+    B10 = {"usedMsg": "bUsedMsg00000000000000",
+           "unusedMsg": "bUnusedMsg000000000000"}
+
+    def vinit(key):
+        vid = c10.var_map[V10[key]][0]
+        assert vid in sv10, f"変数 {key} が誤って削除された"
+        return sv10[vid][1]
+
+    def linit(key):
+        lid = c10.list_map[L10[key]][0]
+        assert lid in sl10, f"リスト {key} が誤って削除された"
+        return sl10[lid][1]
+
+    # 非表示モニターだけのストアは削除、表示モニター・読み取りは保持。
+    for key in ("hiddenOnly", "looseVar", "orphanVar"):
+        assert c10.var_map[V10[key]][0] not in sv10, f"未表示変数 {key} が残存"
+    assert c10.list_map[L10["hiddenListOnly"]][0] not in sl10, \
+        "非表示モニターだけのリストが残存"
+    # 読み取り専用変数はリテラルへ畳み込まれ、ストア自体も削除される。
+    assert c10.var_map[V10["keepRead"]][0] not in sv10, \
+        "読み取り専用変数がリテラルへ畳み込まれていない"
+    assert st10["const_vars_inlined"] >= 1
+    assert vinit("visibleOnly") == 12, "表示中変数が削除/変更された"
+    assert linit("visibleListOnly") == [2], "表示中リストが削除/変更された"
+
+    # 初期化済みの変数・リストは初期値を空白化。読み取りが先なら保持。
+    assert vinit("writeOnly") == "", \
+        "書き込み専用変数の初期値が空白化されていない"
+    assert vinit("initVar") == "", \
+        "使用前に初期化される変数の初期値が空白化されていない"
+    assert vinit("selfVar") == 5, \
+        "自己参照 change の初期値が誤って空白化された"
+    assert vinit("readFirst") == 6, \
+        "読み取りが先の変数の初期値が誤って空白化された"
+    assert vinit("sensedVar") == 7, \
+        "sensing_of 参照変数の初期値が誤って空白化された"
+    assert linit("readList") == ["r"], "読み取り専用リストの初期値が変更された"
+    assert linit("initList") == [], \
+        "delete all で初期化されるリストの初期値が空白化されていない"
+    assert linit("appendList") == ["y"], \
+        "add to list のリスト初期値が誤って空白化された"
+    assert linit("deleteOnlyList") == [], \
+        "delete all のみのリスト初期値が空白化されていない"
+    assert linit("readOnlyList") == ["q"], \
+        "読み取り専用リストの初期値が誤って空白化された"
+    assert st10["vars_initialized"] >= 2 and st10["lists_initialized"] >= 2
+
+    # 放送: 送信されるメッセージとレシーバーだけが残る。
+    assert c10.bc_map[B10["usedMsg"]][0] in sb10
+    assert all(v[0] != "unusedMsg" for v in sb10.values()), \
+        "未使用メッセージ定義が残存"
+    assert any(b.get("opcode") == "event_broadcast"
+               for b in stage10["blocks"].values() if isinstance(b, dict))
+    recv_fields = [b.get("fields", {}).get("BROADCAST_OPTION", [None])[0]
+                   for b in stage10["blocks"].values()
+                   if isinstance(b, dict)
+                   and b.get("opcode") == "event_whenbroadcastreceived"]
+    assert recv_fields == [c10.bc_map[B10["usedMsg"]][1]], \
+        f"未使用メッセージのレシーバーが残存: {recv_fields}"
+
+    # 到達不能ブロック・コメント・未呼び出し定義の削除。
+    ops10 = [b.get("opcode") for b in stage10["blocks"].values()
+             if isinstance(b, dict)]
+    codes10 = [b.get("mutation", {}).get("proccode")
+               for b in stage10["blocks"].values()
+               if isinstance(b, dict)
+               and b.get("opcode") in ("procedures_definition",
+                                      "procedures_prototype")]
+    assert "dead" not in codes10, "呼び出されない定義が残存"
+    assert ops10.count("event_whenbroadcastreceived") == 1
+    assert stage10.get("comments") and len(stage10["comments"]) == 2, \
+        f"到達可能/ワークスペースコメントが削除された: {stage10.get('comments')}"
+    kept_comment = next(c for c in stage10["comments"].values()
+                        if c.get("text") == "kept")
+    assert kept_comment["blockId"] in stage10["blocks"]
+    assert any(c.get("text") == "free note" and c.get("blockId") is None
+               for c in stage10["comments"].values()), \
+        "ワークスペースコメントが削除された"
+    assert st10["unreachable_blocks_removed"] >= 7
+    assert st10["unreachable_comments_removed"] >= 1
+    assert st10["procs_removed"] >= 1 and st10["broadcasts_removed"] == 1
+
+    # 演算ブロックに覆われた既定値の削除。
+    gotoxy10 = next(b for b in stage10["blocks"].values()
+                    if isinstance(b, dict) and b.get("opcode") == "motion_gotoxy")
+    assert gotoxy10["inputs"]["X"][0] == 2 and len(gotoxy10["inputs"]["X"]) == 2, \
+        f"隠れ既定値が削除されていない: {gotoxy10['inputs']['X']}"
+    assert st10["obscured_shadows_removed"] >= 1
+
+    # 連続する同一コードは定義化ではなく repeat にまとめる。
+    dup_ops10 = [b.get("opcode") for b in dup10["blocks"].values()
+                 if isinstance(b, dict)]
+    assert st10["loops_created"] >= 2, \
+        f"連続重複がループ化されていない: {st10['loops_created']}"
+    assert st10["loop_blocks_saved"] >= 18, \
+        f"ループ化でブロックが減っていない: {st10['loop_blocks_saved']}"
+    assert dup_ops10.count("control_repeat") == 2
+    assert len(dup10["blocks"]) < 26, "ループ化でブロック数が減っていない"
+
+    # 非表示モニターは削除され、表示中モニターだけが残る。
+    mon_params10 = {(m.get("opcode"), tuple(sorted((m.get("params") or {}).items())))
+                    for m in q10["monitors"]}
+    assert ("data_variable",
+            (("VARIABLE", c10.var_map[V10["visibleOnly"]][1]),)) in mon_params10
+    assert ("data_listcontents",
+            (("LIST", c10.list_map[L10["visibleListOnly"]][1]),)) in mon_params10
+    assert not any("hiddenOnly" in str(m) or "hiddenListOnly" in str(m)
+                   for m in q10["monitors"]), "非表示モニターが残存"
+
+    errs10 = validate_project(q10)
+    assert not errs10, errs10
+    print(f"[OK] 新機能一式（未表示削除・初期値 {st10['vars_initialized']}変数/"
+          f"{st10['lists_initialized']}リスト・到達不能 {st10['unreachable_blocks_removed']}"
+          f"ブロック・重複 {st10['duplicates_extracted']}組・隠れ既定値 "
+          f"{st10['obscured_shadows_removed']}）")
+
+    # warp（画面更新なし）定義内のコードは、同じ warp 定義へなら抽出できる。
+    # 通常スクリプト側とは混ぜず、新定義も warp にする必要がある。
+    p11 = build_warp_duplicate_sample()
+    c11 = Compressor(Options(loop_duplicates=False))
+    q11 = c11.run(p11)
+    assert c11.stats["duplicates_extracted"] >= 1, \
+        "warp 定義内の重複が抽出されていない"
+    assert c11.stats["procs_removed"] == 0, "呼び出した定義が削除された"
+    bs11 = q11["targets"][0]["blocks"]
+    protos11 = [b for b in bs11.values()
+                if isinstance(b, dict)
+                and b.get("opcode") == "procedures_prototype"]
+    new_protos11 = [p for p in protos11
+                    if p["mutation"]["proccode"] != "warpy"]
+    assert new_protos11, "抽出定義がない"
+    assert sum(1 for p in protos11
+               if p["mutation"]["proccode"] == "warpy") == 2, \
+        "元の warp 定義が失われた"
+
+    def owner_warp(block_id):
+        cur = bs11[block_id].get("parent")
+        seen = set()
+        while isinstance(cur, str) and cur in bs11 and cur not in seen:
+            seen.add(cur)
+            blk = bs11[cur]
+            if blk.get("opcode") == "procedures_definition":
+                cb = (blk.get("inputs") or {}).get("custom_block")
+                pid = cb[1] if isinstance(cb, list) and len(cb) > 1 else None
+                proto = bs11.get(pid) or {}
+                warp = (proto.get("mutation") or {}).get("warp")
+                return str(warp) == "true"
+            cur = blk.get("parent")
+        return False
+
+    for proto in new_protos11:
+        code = proto["mutation"]["proccode"]
+        calls = [bid for bid, b in bs11.items()
+                 if isinstance(b, dict)
+                 and b.get("opcode") == "procedures_call"
+                 and b["mutation"]["proccode"] == code]
+        assert calls, f"抽出定義 {code} の呼び出しがない"
+        inside = {owner_warp(cid) for cid in calls}
+        assert len(inside) == 1, f"{code} が warp/通常の両方から呼ばれている"
+        assert (proto["mutation"]["warp"] == "true") == inside.pop(), \
+            f"warp 由来の抽出定義が warp になっていない: {proto['mutation']}"
+    assert any(p["mutation"]["warp"] == "true" for p in new_protos11), \
+        "warp 由来の抽出定義がない"
+    errs11 = validate_project(q11)
+    assert not errs11, errs11
+    print("[OK] warp定義内の重複はwarp定義へ抽出（画面更新タイミング保持）")
+
+    # ---------- 8b) 引数付き定義内の重複抽出 ----------
+    # 同じ定義内で同じ引数を使う重複は、引数を新定義へ渡して抽出できる。
+    p12 = build_argument_duplicate_sample("same_def")
+    c12 = Compressor(Options(compress_procs=False, loop_duplicates=False))
+    q12 = c12.run(p12)
+    bs12 = q12["targets"][0]["blocks"]
+    st12 = c12.stats
+    assert st12["duplicates_extracted"] == 1, \
+        f"引数付き重複が抽出されていない: {st12}"
+    protos12 = {b["mutation"]["proccode"]: b for b in bs12.values()
+                if isinstance(b, dict)
+                and b.get("opcode") == "procedures_prototype"}
+    assert "proc %s %b" in protos12, f"元の定義が失われた: {list(protos12)}"
+    dup12 = protos12.get("dup1 %s %b")
+    assert dup12 is not None, f"引数付き抽出定義がない: {list(protos12)}"
+    dmut = dup12["mutation"]
+    assert json.loads(dmut["argumentnames"]) == ["x", "flag"], dmut
+    assert json.loads(dmut["argumentdefaults"]) == ["", False], dmut
+    dup_args = json.loads(dmut["argumentids"])
+    assert len(dup_args) == 2 and len(set(dup_args)) == 2
+    dup_calls = [(cid, b) for cid, b in bs12.items()
+                 if isinstance(b, dict)
+                 and b.get("opcode") == "procedures_call"
+                 and b["mutation"]["proccode"] == "dup1 %s %b"]
+    assert len(dup_calls) == 2, f"抽出箇所の呼び出し数が不正: {len(dup_calls)}"
+    for call_id, call in dup_calls:
+        call_args = json.loads(call["mutation"]["argumentids"])
+        assert call_args == dup_args
+        kinds = {}
+        for aid in call_args:
+            assert aid in call["inputs"], f"引数 {aid} の入力がない"
+            ref = call["inputs"][aid]
+            reporter = bs12.get(ref[1])
+            assert isinstance(reporter, dict), ref
+            assert reporter.get("parent") == call_id, \
+                "呼び出し側の引数レポーターの親が不正"
+            kinds[reporter["opcode"]] = ref
+        assert set(kinds) == {"argument_reporter_string_number",
+                              "argument_reporter_boolean"}, kinds
+        text_ref = kinds["argument_reporter_string_number"]
+        bool_ref = kinds["argument_reporter_boolean"]
+        assert text_ref[0] == 3 and text_ref[2] == [10, ""], text_ref
+        assert bool_ref[0] == 2 and len(bool_ref) == 2, bool_ref
+        assert bs12[text_ref[1]]["fields"]["VALUE"][0] == "x"
+        assert bs12[bool_ref[1]]["fields"]["VALUE"][0] == "flag"
+    errs12 = validate_project(q12)
+    assert not errs12, errs12
+
+    # 引数付き定義内でも、重複コードが引数を使わないなら引数なしで抽出する。
+    p13 = build_argument_duplicate_sample("no_args")
+    c13 = Compressor(Options(compress_procs=False, loop_duplicates=False))
+    q13 = c13.run(p13)
+    assert c13.stats["duplicates_extracted"] == 1, \
+        "引数未使用の重複が抽出されていない"
+    protos13 = {b["mutation"]["proccode"]: b for b in q13["targets"][0]["blocks"].values()
+                if isinstance(b, dict)
+                and b.get("opcode") == "procedures_prototype"}
+    assert "dup1" in protos13, f"引数なし抽出定義がない: {list(protos13)}"
+    assert json.loads(protos13["dup1"]["mutation"]["argumentnames"]) == []
+    assert json.loads(protos13["dup1"]["mutation"]["argumentids"]) == []
+    assert not validate_project(q13)
+
+    # 別々の定義にまたがる引数利用は、呼び出し元の文脈が異なるため抽出しない。
+    # 定義に存在しない引数名のレポーターも同様に対象外。
+    for mode13 in ("different_defs", "undeclared"):
+        p14 = build_argument_duplicate_sample(mode13)
+        c14 = Compressor(Options(compress_procs=False))
+        q14 = c14.run(p14)
+        assert c14.stats["duplicates_extracted"] == 0, \
+            f"{mode13}: 安全でない重複抽出が行われた"
+        errs14 = validate_project(q14)
+        assert not errs14, errs14
+    print("[OK] 引数付き重複の抽出（同一引数のみ・引数未使用も可・"
+          "別定義/未宣言は対象外）")
+
+    # レポーター（演算ブロック）はスタック列ではないので抽出対象にしない。
+    # 同じ演算サブツリーが5回現れても、定義本体へ移すとスクリプトが
+    # コンパイルできなくなる（レポーターが積み木扱いになる）。
+    p15 = build_reporter_duplicate_sample()
+    assert sum(1 for b in p15["targets"][0]["blocks"].values()
+               if isinstance(b, dict) and b.get("opcode") == "operator_add") == 5
+    c15 = Compressor(Options(compress_procs=False))
+    q15 = c15.run(p15)
+    bs15 = q15["targets"][0]["blocks"]
+    assert c15.stats["duplicates_extracted"] == 0, \
+        "レポーターが重複抽出の対象になった"
+    assert not any(isinstance(b, dict)
+                   and b.get("opcode") == "procedures_definition"
+                   for b in bs15.values()), "レポーターから定義が作られた"
+    stack_targets = set()
+    for b in bs15.values():
+        if not isinstance(b, dict):
+            continue
+        nxt = b.get("next")
+        if isinstance(nxt, str):
+            stack_targets.add(nxt)
+        if b.get("opcode") == "procedures_definition" \
+                and isinstance(nxt, str):
+            stack_targets.add(nxt)
+        for key, value in (b.get("inputs") or {}).items():
+            if (key in ("SUBSTACK", "SUBSTACK2") and isinstance(value, list)
+                    and len(value) > 1 and isinstance(value[1], str)):
+                stack_targets.add(value[1])
+    for bid in stack_targets:
+        op = bs15[bid].get("opcode", "")
+        assert not op.startswith(("operator_", "argument_reporter")), \
+            f"レポーターがスタック位置に移動した: {bid} {op}"
+        assert op not in ("data_variable", "data_listcontents",
+                          "data_itemoflist", "data_itemnumoflist",
+                          "data_lengthoflist", "data_listcontainsitem"), \
+            f"データレポーターがスタック位置に移動した: {bid} {op}"
+    errs15 = validate_project(q15)
+    assert not errs15, errs15
+    print("[OK] レポーターは抽出せず、スタック列だけを対象にする")
+
+    # ---------- 8b-2) リテラル差分だけを持つ近似的な重複の抽出 ----------
+    p17 = build_near_duplicate_sample("literals")
+    c17 = Compressor(Options(compress_procs=False, loop_duplicates=False))
+    q17 = c17.run(p17)
+    bs17 = q17["targets"][0]["blocks"]
+    st17 = c17.stats
+    assert st17["near_duplicates_extracted"] == 1, \
+        f"リテラル差分の重複が抽出されていない: {st17}"
+    assert st17["near_blocks_saved"] >= 10, \
+        f"近似重複でブロックが減っていない: {st17}"
+    protos17 = {b["mutation"]["proccode"]: b for b in bs17.values()
+                if isinstance(b, dict)
+                and b.get("opcode") == "procedures_prototype"}
+    code17 = "ndup1 %s %s"
+    assert code17 in protos17, f"近似抽出定義がない: {list(protos17)}"
+    mut17 = protos17[code17]["mutation"]
+    assert json.loads(mut17["argumentnames"]) == ["p1", "p2"], mut17
+    assert json.loads(mut17["argumentdefaults"]) == ["", ""], mut17
+    dup_args17 = json.loads(mut17["argumentids"])
+    assert len(dup_args17) == 2 and len(set(dup_args17)) == 2
+    # 本体側は差分スロットだけが引数レポーターになっている。
+    body_reporters = [b for b in bs17.values()
+                      if isinstance(b, dict)
+                      and b.get("opcode") == "argument_reporter_string_number"
+                      and b.get("parent") not in
+                      {cid for cid, cb in bs17.items()
+                       if isinstance(cb, dict)
+                       and cb.get("opcode") == "procedures_call"}]
+    assert len(body_reporters) == 2, \
+        f"本体の引数レポーター数が不正: {len(body_reporters)}"
+    assert {b["fields"]["VALUE"][0] for b in body_reporters} == {"p1", "p2"}
+    calls17 = [(cid, b) for cid, b in bs17.items()
+               if isinstance(b, dict)
+               and b.get("opcode") == "procedures_call"
+               and b["mutation"]["proccode"] == code17]
+    assert len(calls17) == 3, f"呼び出し数が不正: {len(calls17)}"
+    passed = set()
+    for cid, call in calls17:
+        assert json.loads(call["mutation"]["argumentids"]) == dup_args17
+        vals = []
+        for aid in dup_args17:
+            ref = call["inputs"][aid]
+            # 差分はリテラルのまま渡す（レポーターブロックを作らない）。
+            assert ref[0] == 1 and isinstance(ref[1], list), ref
+            assert ref[1][0] == 4, ref
+            vals.append(ref[1][1])
+        passed.add(tuple(vals))
+    assert passed == {("1", "8"), ("1", "9"), ("10", "8")}, passed
+    errs17 = validate_project(q17)
+    assert not errs17, errs17
+
+    # 無効化すると同じ入力からは定義を作らない。
+    c17b = Compressor(Options(near_duplicates=False, compress_procs=False,
+                              loop_duplicates=False))
+    q17b = c17b.run(build_near_duplicate_sample("literals"))
+    assert c17b.stats["near_duplicates_extracted"] == 0
+    assert not any(isinstance(b, dict)
+                   and b.get("opcode") == "procedures_definition"
+                   for b in q17b["targets"][0]["blocks"].values())
+
+    # プルダウン（フィールド）が異なるものは、リテラル差分があっても共有しない。
+    p18 = build_near_duplicate_sample("field")
+    c18 = Compressor(Options(compress_procs=False, loop_duplicates=False))
+    q18 = c18.run(p18)
+    assert c18.stats["near_duplicates_extracted"] == 0, \
+        "プルダウンが異なるブロックが近似重複として抽出された"
+    assert not any(isinstance(b, dict)
+                   and b.get("opcode") == "procedures_definition"
+                   for b in q18["targets"][0]["blocks"].values())
+    assert not validate_project(q18)
+    print("[OK] リテラル差分のみ引数化して近似重複を抽出（フィールド差分は対象外）")
+
+
+    # ---------- 8c) 折り畳み・不要定義/放送・1回呼び出し・定数伝播 ----------
+    V_NEVER_16 = "sNever00000000000000"
+    V_DOMI_16 = "sDomi000000000000000"
+    B_LIVE_16 = "sLive000000000000000"
+    p16 = build_simplify_sample()
+    c16 = Compressor(Options(compress_procs=False, extract_duplicates=False,
+                             loop_duplicates=False, strip_defaults=False))
+    q16 = c16.run(p16)
+    bs16 = q16["targets"][0]["blocks"]
+    st16 = c16.stats
+
+    # if/else（else なし）は if へ。
+    assert st16["ifelse_converted"] == 1
+    ops16 = [b.get("opcode") for b in bs16.values() if isinstance(b, dict)]
+    assert "control_if_else" not in ops16 and ops16.count("control_if") == 1
+
+    # JavaScript の数値意味論で畳み込む。NaN (0/0) は畳み込まない。
+    msgs16 = [b["inputs"]["MESSAGE"][1] for b in bs16.values()
+              if isinstance(b, dict) and b.get("opcode") == "looks_say"]
+    for expected in ([4, "Infinity"], [4, "-Infinity"], [4, "1"],
+                     [4, "-0"], [4, "3"]):
+        assert expected in msgs16, f"畳み込み結果がない: {expected} / {msgs16}"
+    assert st16["const_values_folded"] == 5, st16["const_values_folded"]
+    assert ops16.count("operator_divide") == 1, "0/0 が畳み込まれた"
+
+    # 何もしない定義とその呼び出しは削除。warp の 1 回呼び出しは残す。
+    assert st16["noop_procs_removed"] == 1 and st16["noop_calls_removed"] == 1
+    assert st16["procs_inlined"] == 1, st16["procs_inlined"]
+    protos16 = {b["mutation"]["proccode"]: b for b in bs16.values()
+                if isinstance(b, dict)
+                and b.get("opcode") == "procedures_prototype"}
+    assert set(protos16) == {"warpone"}, list(protos16)
+    assert ops16.count("procedures_call") == 1
+    assert ops16.count("procedures_definition") == 1
+    # 非 warp 定義の本体は呼び出し位置へ移動している。
+    assert any(b.get("opcode") == "motion_movesteps"
+               and (b.get("inputs") or {}).get("STEPS") == [1, [4, "2"]]
+               for b in bs16.values() if isinstance(b, dict))
+
+    # 空のレシーバーと送信だけの放送は削除し、実体のある放送は残す。
+    assert st16["noop_receivers_removed"] == 1
+    assert st16["noop_broadcasts_removed"] == 1
+    assert st16["noop_messages_removed"] == 1
+    live_key16 = c16.bc_map[B_LIVE_16][0]
+    assert set(q16["targets"][0]["broadcasts"].keys()) == {live_key16}
+    assert ops16.count("event_whenbroadcastreceived") == 1
+    assert ops16.count("event_broadcast") == 1
+    recv16 = next(b for b in bs16.values()
+                  if isinstance(b, dict)
+                  and b.get("opcode") == "event_whenbroadcastreceived")
+    assert recv16["fields"]["BROADCAST_OPTION"][1] == live_key16
+
+    # 定数伝播: 書き込みのない never は全読み取りを置換してストアも削除。
+    # domi は「7 を書いた後」の読みだけ置換し、書き込み前の読みは残す。
+    assert st16["const_vars_inlined"] == 2, st16["const_vars_inlined"]
+    assert st16["const_reads_inlined"] == 3, st16["const_reads_inlined"]
+    vars16 = q16["targets"][0]["variables"]
+    assert c16.var_map[V_NEVER_16][0] not in vars16
+    assert c16.var_map[V_DOMI_16][0] in vars16
+    domi_id = c16.var_map[V_DOMI_16][0]
+    domi_refs = [v for b in bs16.values() if isinstance(b, dict)
+                 for v in (b.get("inputs") or {}).values()
+                 if isinstance(v, list)
+                 for item in v[1:]
+                 if isinstance(item, list) and len(item) > 2
+                 and item[0] == 12 and item[2] == domi_id]
+    assert len(domi_refs) == 1, f"書き込み前の読みが消えた: {domi_refs}"
+    assert [4, "7"] in msgs16
+    assert not validate_project(q16), validate_project(q16)
+    print("[OK] 数値畳み込み/if簡約/不要定義・放送/1回呼び出し/定数伝播")
+
+    # ---------- 9) 実ファイル: sb3compressor.sb3 ----------
     real = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sb3compressor.sb3")
     if os.path.isfile(real):
         rp = compress_file(real, Options())
