@@ -223,13 +223,6 @@
               <div class="bar-removed" id="mediaRemoved"></div>
             </div>
           </div>
-          <div class="bar">
-            <div class="bar-top"><span class="bar-label">.sb3 file</span><span class="bar-value" id="fileSizes">—</span></div>
-            <div class="bar-track">
-              <div class="bar-kept" id="fileKept"><span id="fileKeptLabel">—</span></div>
-              <div class="bar-removed" id="fileRemoved"></div>
-            </div>
-          </div>
         </div>
         <div class="bar-legend">
           <span><i class="key kept" aria-hidden="true"></i>Kept</span>
@@ -253,6 +246,21 @@
         <div class="figure">
           <span class="figure-num" id="figureNum">0.0</span><span class="figure-unit">%</span>
           <span class="figure-label" id="figureLabel">smaller .sb3 file</span>
+        </div>
+
+        <div class="gauge" id="fileGauge" role="img" aria-label="No file measured yet">
+          <div class="gauge-track">
+            <div class="gauge-kept" id="fileKept"><span id="fileKeptLabel">—</span></div>
+            <div class="gauge-removed" id="fileRemoved"></div>
+          </div>
+          <div class="gauge-scale" aria-hidden="true">
+            <span>0</span><span>25</span><span>50</span><span>75</span><span>100%</span>
+          </div>
+          <div class="gauge-legend">
+            <span><i class="key kept" aria-hidden="true"></i>Kept</span>
+            <span><i class="key removed" aria-hidden="true"></i>Removed</span>
+            <span class="gauge-size" id="fileSizes">—</span>
+          </div>
         </div>
 
         <div class="run-state">

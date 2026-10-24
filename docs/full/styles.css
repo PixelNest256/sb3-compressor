@@ -1492,3 +1492,11 @@ html[lang="ja"] .footer { font-size: 10px; line-height: 1.7; }
   color: var(--panel-soft);
 }
 .bar-legend span { display: inline-flex; align-items: center; gap: 5px; }
+
+/* full tool: thick gauge for the .sb3 file, under the big figure */
+.gauge-legend .gauge-size {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--panel-soft);
+  white-space: nowrap;
+}
