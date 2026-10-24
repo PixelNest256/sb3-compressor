@@ -5,6 +5,9 @@ __pycache__/
 # Scratch projects (never commit user projects)
 *.sb3
 
+# Vendor build dependencies (the generated vendor/ output is committed)
+build/**/node_modules/
+
 # OS artifacts
 Thumbs.db
 .DS_Store

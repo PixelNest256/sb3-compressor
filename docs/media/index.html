@@ -36,8 +36,6 @@
       <span class="brand-sub">browser media utility</span>
     </div>
     <div class="masthead-links">
-      <a class="tool-link" href="../">Home</a>
-      <a class="tool-link" href="../sb3/">SB3&nbsp;compressor</a>
       <a class="lang-link" href="ja/" hreflang="ja" lang="ja">日本語</a>
       <div class="theme-switch" role="group" aria-label="Color theme">
         <button type="button" data-theme-set="light">Light</button>
@@ -119,11 +117,27 @@
               <button type="button" data-strength="strong">Strong</button>
             </div>
           </div>
+
+          <div class="strength" id="autoExtra">
+            <span class="strength-label">Audio</span>
+            <label class="opt opt-inline"><input type="checkbox" id="optWavMp3"><span>Convert WAV to MP3</span></label>
+            <select id="wavMp3Bitrate" class="select select-inline" aria-label="WAV to MP3 bitrate">
+              <option value="96" selected>96 kbps</option>
+              <option value="128">128 kbps</option>
+              <option value="64">64 kbps</option>
+            </select>
+            <label class="opt opt-inline"><input type="checkbox" id="optMp3Reenc"><span>Re-encode MP3</span></label>
+            <select id="mp3Bitrate" class="select select-inline" aria-label="MP3 bitrate">
+              <option value="64">64 kbps</option>
+              <option value="96" selected>96 kbps</option>
+              <option value="128">128 kbps</option>
+            </select>
+          </div>
         </div>
 
         <div class="lossy-note">
           <span class="tag">Irreversible</span>
-          <p>Image and sound compression discards detail on purpose. Keep a copy of the original file — the change cannot be undone.</p>
+          <p>Image and sound compression discards detail on purpose. Converting WAV to MP3 also rewrites <code>project.json</code>. Keep a copy of the original file — the change cannot be undone.</p>
         </div>
 
         <div class="ledger" id="ledger" hidden>
@@ -149,16 +163,19 @@
           <summary>What gets re-encoded, and how</summary>
           <div class="notes-body">
             <ul>
-              <li><strong>PNG costumes</strong> are reduced to a palette (up to the colour count you choose) and written back as an indexed PNG. Fully transparent areas stay transparent.</li>
-              <li><strong>JPEG costumes</strong> are re-encoded at the quality you choose. Their pixel size is never changed, so rotation centres stay valid.</li>
-              <li><strong>SVG costumes</strong> lose comments, editor metadata, unused namespaces, and excess coordinate digits.</li>
-              <li><strong>WAV sounds</strong> are resampled and can be downmixed to mono. <strong>MP3 sounds</strong> only have their ID3 tags removed — the browser has no MP3 encoder.</li>
+              <li><strong>PNG costumes</strong> are reduced to a palette and written back as indexed PNGs, then squeezed losslessly by <strong>OxiPNG</strong>. A palette that keeps transparency or a dithered palette can be chosen.</li>
+              <li><strong>JPEG costumes</strong> are re-encoded by <strong>MozJPEG</strong> at the quality you choose. Their pixel size is never changed, so rotation centres stay valid.</li>
+              <li><strong>SVG costumes</strong> are optimised by <strong>SVGO</strong> (comments, metadata, editor namespaces, path data, and excess digits).</li>
+              <li><strong>WAV sounds</strong> are resampled with a band-limited filter, downmixed if you like, or converted to <strong>MP3</strong> with the LAME encoder.</li>
+              <li><strong>MP3 sounds</strong> can have their ID3 tags stripped, or be re-decoded and re-encoded at a lower bitrate.</li>
               <li>An asset is only replaced when the new bytes are actually smaller. Anything else is kept as-is.</li>
             </ul>
             <p class="fine">
-              File names and formats never change, so <code>project.json</code>
-              stays byte-for-byte identical. The Scratch VM loads each costume
-              and sound by its name, so the project opens and runs the same.
+              File names and formats stay the same — so <code>project.json</code>
+              stays byte-for-byte identical — unless a WAV sound is converted to
+              MP3, which updates that asset's <code>md5ext</code> and
+              <code>dataFormat</code>. The Scratch VM loads each costume and
+              sound by its name, so the project opens and runs the same.
             </p>
           </div>
         </details>

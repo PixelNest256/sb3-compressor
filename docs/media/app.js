@@ -136,6 +136,7 @@
 
   var STRENGTH_KEY = "sb3-media-strength-v1";
   var MODE_KEY = "sb3-media-mode-v1";
+  var AUDIO_KEY = "sb3-media-audio-v1";
 
   var el = {
     dropzone: document.getElementById("dropzone"),
@@ -149,6 +150,11 @@
     modeManual: document.getElementById("modeManual"),
     modeDesc: document.getElementById("modeDesc"),
     strengthWrap: document.getElementById("strengthWrap"),
+    autoExtra: document.getElementById("autoExtra"),
+    optWavMp3: document.getElementById("optWavMp3"),
+    wavMp3Bitrate: document.getElementById("wavMp3Bitrate"),
+    optMp3Reenc: document.getElementById("optMp3Reenc"),
+    mp3Bitrate: document.getElementById("mp3Bitrate"),
     ledger: document.getElementById("ledger"),
     ledgerSummary: document.getElementById("ledgerSummary"),
     ledgerToggle: document.getElementById("ledgerToggle"),
@@ -229,20 +235,57 @@
     try { localStorage.setItem(key, value); } catch (_) { /* ignore */ }
   }
 
+  function readAudio() {
+    var out = { wavToMp3: false, wavMp3Bitrate: 96, reencodeMp3: false, mp3Bitrate: 96 };
+    try {
+      var s = JSON.parse(localStorage.getItem(AUDIO_KEY) || "null");
+      if (s && typeof s === "object") {
+        out.wavToMp3 = !!s.wavToMp3;
+        out.reencodeMp3 = !!s.reencodeMp3;
+        if ([64, 96, 128].indexOf(Number(s.wavMp3Bitrate)) >= 0) out.wavMp3Bitrate = Number(s.wavMp3Bitrate);
+        if ([64, 96, 128].indexOf(Number(s.mp3Bitrate)) >= 0) out.mp3Bitrate = Number(s.mp3Bitrate);
+      }
+    } catch (_) { /* ignore */ }
+    return out;
+  }
+
+  function applyAudio(a) {
+    if (el.optWavMp3) el.optWavMp3.checked = !!a.wavToMp3;
+    if (el.optMp3Reenc) el.optMp3Reenc.checked = !!a.reencodeMp3;
+    if (el.wavMp3Bitrate) el.wavMp3Bitrate.value = String(a.wavMp3Bitrate);
+    if (el.mp3Bitrate) el.mp3Bitrate.value = String(a.mp3Bitrate);
+  }
+
+  function saveAudio() {
+    var a = {
+      wavToMp3: !!(el.optWavMp3 && el.optWavMp3.checked),
+      reencodeMp3: !!(el.optMp3Reenc && el.optMp3Reenc.checked),
+      wavMp3Bitrate: el.wavMp3Bitrate ? parseInt(el.wavMp3Bitrate.value, 10) : 96,
+      mp3Bitrate: el.mp3Bitrate ? parseInt(el.mp3Bitrate.value, 10) : 96
+    };
+    try { localStorage.setItem(AUDIO_KEY, JSON.stringify(a)); } catch (_) { /* ignore */ }
+  }
+
+  function onAudioChange() {
+    saveAudio();
+    if (mode === "auto" && scan) startCompression();
+    else markStale();
+  }
+
   // ----------------------------------------------------------- strength
 
   var PRESET_OPTION = {
     light: {
-      png: "png:256", jpeg: "jpeg:0.85", svg: "svg:safe",
-      wav: "wav:repack", mp3: "mp3:tags"
+      png: "png:256", jpeg: "jpeg:85", svg: "svg:safe",
+      wav: "wav:repack", mp3: "mp3tags"
     },
     balanced: {
-      png: "png:128", jpeg: "jpeg:0.72", svg: "svg:balanced",
-      wav: "wav:22050", mp3: "mp3:tags"
+      png: "png:128", jpeg: "jpeg:72", svg: "svg:balanced",
+      wav: "wav:22050", mp3: "mp3tags"
     },
     strong: {
-      png: "png:64", jpeg: "jpeg:0.55", svg: "svg:aggressive",
-      wav: "wav:16000:m", mp3: "mp3:tags"
+      png: "png:32", jpeg: "jpeg:55", svg: "svg:aggressive",
+      wav: "wav:16000:m", mp3: "mp3tags"
     }
   };
 
@@ -261,34 +304,51 @@
 
   function optionHint(asset, value) {
     if (value === "keep") return L.keptOriginal;
+    if (value === "pnglossless") return "lossless (OxiPNG)";
+    if (value.indexOf("pngd:") === 0) return "palette " + value.slice(5) + " + dither";
     if (value.indexOf("png:") === 0) return "palette " + value.slice(4);
-    if (value.indexOf("jpeg:") === 0) {
-      var q = Math.round(parseFloat(value.slice(5)) * 100);
-      return "q" + q;
-    }
-    if (value === "svg:safe") return "clean up (safe)";
-    if (value === "svg:balanced") return "clean up";
-    if (value === "svg:aggressive") return "clean up (strong)";
+    if (value.indexOf("jpeg:") === 0) return "q" + value.slice(5);
+    if (value === "svg:safe") return "SVGO (safe)";
+    if (value === "svg:balanced") return "SVGO";
+    if (value === "svg:aggressive") return "SVGO (strong)";
     if (value === "wav:repack") return "PCM repack";
+    if (value.indexOf("wav2mp3:") === 0) {
+      var mp = value.slice(8).split(":");
+      return "→ MP3 " + mp[0] + "k" + (mp[1] === "m" ? " mono" : "");
+    }
     if (value.indexOf("wav:") === 0) {
       var wp = value.slice(4).split(":");
       return wp[0] + " Hz" + (wp[1] === "m" ? " mono" : "");
     }
-    if (value === "mp3:tags") return "strip tags";
+    if (value === "mp3tags") return "strip tags";
+    if (value.indexOf("mp3enc:") === 0) {
+      var q = value.slice(7).split(":");
+      return "MP3 " + q[0] + "k" + (q[1] === "m" ? " mono" : "");
+    }
     return value;
   }
 
   function settingFromValue(asset, value) {
     if (value === "keep") return { method: "keep" };
-    if (value.indexOf("png:") === 0) return { method: "png", colors: parseInt(value.slice(4), 10) };
-    if (value.indexOf("jpeg:") === 0) return { method: "jpeg", quality: parseFloat(value.slice(5)) };
+    if (value === "pnglossless") return { method: "pnglossless", level: 3 };
+    if (value.indexOf("pngd:") === 0) return { method: "png", colors: parseInt(value.slice(5), 10), dither: true, oxilevel: 3 };
+    if (value.indexOf("png:") === 0) return { method: "png", colors: parseInt(value.slice(4), 10), oxilevel: 3 };
+    if (value.indexOf("jpeg:") === 0) return { method: "jpeg", quality: parseInt(value.slice(5), 10) };
     if (value.indexOf("svg:") === 0) return { method: "svg", level: value.slice(4) };
     if (value === "wav:repack") return { method: "wav", rate: 0, bits: 0, mono: false };
+    if (value.indexOf("wav2mp3:") === 0) {
+      var mp = value.slice(8).split(":");
+      return { method: "wav2mp3", bitrate: parseInt(mp[0], 10), mono: mp[1] === "m" };
+    }
     if (value.indexOf("wav:") === 0) {
       var w = value.slice(4).split(":");
       return { method: "wav", rate: parseInt(w[0], 10), bits: 16, mono: w[1] === "m" };
     }
-    if (value === "mp3:tags") return { method: "mp3", stripTags: true };
+    if (value === "mp3tags") return { method: "mp3tags" };
+    if (value.indexOf("mp3enc:") === 0) {
+      var q = value.slice(7).split(":");
+      return { method: "mp3enc", bitrate: parseInt(q[0], 10), mono: q[1] === "m" };
+    }
     return { method: "keep" };
   }
 
@@ -341,6 +401,7 @@
     el.modeDesc.textContent = mode === "auto" ? L.modeAutoDesc : L.modeManualDesc;
     el.bulkRow.hidden = mode !== "manual";
     el.strengthWrap.hidden = false;
+    if (el.autoExtra) el.autoExtra.hidden = mode !== "auto";
     // swap the control column
     controlEls.forEach(function (control, name) {
       renderControl(name, control);
@@ -394,19 +455,22 @@
         { value: "png:128", label: "Palette · 128 colours" },
         { value: "png:64", label: "Palette · 64 colours" },
         { value: "png:32", label: "Palette · 32 colours" },
-        { value: "png:16", label: "Palette · 16 colours" }];
+        { value: "png:16", label: "Palette · 16 colours" },
+        { value: "pngd:64", label: "Palette · 64 + dither" },
+        { value: "pngd:32", label: "Palette · 32 + dither" },
+        { value: "pnglossless", label: "Lossless optimize (OxiPNG)" }];
     }
     if (asset.kind === "image") {
       return [keep,
-        { value: "jpeg:0.85", label: "Quality 85" },
-        { value: "jpeg:0.72", label: "Quality 72" },
-        { value: "jpeg:0.55", label: "Quality 55" }];
+        { value: "jpeg:85", label: "Quality 85" },
+        { value: "jpeg:72", label: "Quality 72" },
+        { value: "jpeg:55", label: "Quality 55" }];
     }
     if (asset.kind === "vector") {
       return [keep,
-        { value: "svg:safe", label: "Clean up (safe)" },
-        { value: "svg:balanced", label: "Clean up" },
-        { value: "svg:aggressive", label: "Clean up (strong)" }];
+        { value: "svg:safe", label: "Clean up · safe (SVGO)" },
+        { value: "svg:balanced", label: "Clean up (SVGO)" },
+        { value: "svg:aggressive", label: "Clean up · strong (SVGO)" }];
     }
     if (asset.kind === "wav") {
       return [keep,
@@ -415,10 +479,16 @@
         { value: "wav:16000", label: "16,000 Hz" },
         { value: "wav:16000:m", label: "16,000 Hz · mono" },
         { value: "wav:11025:m", label: "11,025 Hz · mono" },
-        { value: "wav:8000:m", label: "8,000 Hz · mono" }];
+        { value: "wav2mp3:128", label: "→ MP3 128 kbps" },
+        { value: "wav2mp3:96", label: "→ MP3 96 kbps" },
+        { value: "wav2mp3:64:m", label: "→ MP3 64 kbps · mono" }];
     }
     if (asset.kind === "mp3") {
-      return [keep, { value: "mp3:tags", label: "Strip ID3 tags" }];
+      return [keep,
+        { value: "mp3tags", label: "Strip ID3 tags" },
+        { value: "mp3enc:128", label: "Re-encode · 128 kbps" },
+        { value: "mp3enc:96", label: "Re-encode · 96 kbps" },
+        { value: "mp3enc:64", label: "Re-encode · 64 kbps" }];
     }
     return [keep];
   }
@@ -802,6 +872,12 @@
     setBusy(true);
 
     var options = { mode: mode, strength: strength };
+    if (mode === "auto") {
+      options.wavToMp3 = !!(el.optWavMp3 && el.optWavMp3.checked);
+      options.reencodeMp3 = !!(el.optMp3Reenc && el.optMp3Reenc.checked);
+      options.wavMp3Bitrate = el.wavMp3Bitrate ? parseInt(el.wavMp3Bitrate.value, 10) : 96;
+      options.mp3Bitrate = el.mp3Bitrate ? parseInt(el.mp3Bitrate.value, 10) : 96;
+    }
     var plan = mode === "manual" ? readPlan() : null;
     var file = currentFile;
     file.arrayBuffer().then(function (buffer) {
@@ -1029,6 +1105,10 @@
     });
   });
 
+  [el.optWavMp3, el.wavMp3Bitrate, el.optMp3Reenc, el.mp3Bitrate].forEach(function (control) {
+    if (control) control.addEventListener("change", onAudioChange);
+  });
+
   themeButtons.forEach(function (button) {
     button.addEventListener("click", function () {
       setTheme(button.getAttribute("data-theme-set"), true);
@@ -1043,6 +1123,8 @@
     strengthButtons.forEach(function (b) {
       b.setAttribute("aria-pressed", String(b.getAttribute("data-strength") === strength));
     });
+    applyAudio({ wavToMp3: false, reencodeMp3: false, wavMp3Bitrate: 96, mp3Bitrate: 96 });
+    saveAudio();
     applyModeUI();
     if (scan) renderLedger();
     setMessage(L.optionsReset, false);
@@ -1119,6 +1201,7 @@
   strengthButtons.forEach(function (b) {
     b.setAttribute("aria-pressed", String(b.getAttribute("data-strength") === strength));
   });
+  applyAudio(readAudio());
   applyModeUI();
   resetReadout();
 })();

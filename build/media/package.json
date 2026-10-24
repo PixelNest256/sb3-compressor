@@ -1,0 +1,20 @@
+{
+  "name": "sb3-media-vendor",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Vendoring build for the SB3 Media Compressor browser libraries.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  },
+  "dependencies": {
+    "@jsquash/jpeg": "^1.6.0",
+    "@jsquash/oxipng": "^2.3.0",
+    "mpg123-decoder": "^1.0.3",
+    "svgo": "^4.0.0",
+    "wasm-media-encoders": "^0.7.0"
+  }
+}

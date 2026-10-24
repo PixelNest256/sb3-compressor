@@ -36,8 +36,6 @@
       <span class="brand-sub">ブラウザ内ツール</span>
     </div>
     <div class="masthead-links">
-      <a class="tool-link" href="../../">ホーム</a>
-      <a class="tool-link" href="../../sb3/ja/">SB3 圧縮</a>
       <a class="lang-link" href="../" hreflang="en" lang="en">English</a>
       <div class="theme-switch" role="group" aria-label="配色">
         <button type="button" data-theme-set="light">ライト</button>
@@ -118,11 +116,27 @@
               <button type="button" data-strength="strong">強</button>
             </div>
           </div>
+
+          <div class="strength" id="autoExtra">
+            <span class="strength-label">音声</span>
+            <label class="opt opt-inline"><input type="checkbox" id="optWavMp3"><span>WAV を MP3 に変換</span></label>
+            <select id="wavMp3Bitrate" class="select select-inline" aria-label="WAV→MP3 ビットレート">
+              <option value="96" selected>96 kbps</option>
+              <option value="128">128 kbps</option>
+              <option value="64">64 kbps</option>
+            </select>
+            <label class="opt opt-inline"><input type="checkbox" id="optMp3Reenc"><span>MP3 を再エンコード</span></label>
+            <select id="mp3Bitrate" class="select select-inline" aria-label="MP3 ビットレート">
+              <option value="64">64 kbps</option>
+              <option value="96" selected>96 kbps</option>
+              <option value="128">128 kbps</option>
+            </select>
+          </div>
         </div>
 
         <div class="lossy-note">
           <span class="tag">元に戻せません</span>
-          <p>画像と音の圧縮は、あえて情報を捨てて容量を削ります。元のファイルは必ず残しておいてください。元に戻せません。</p>
+          <p>画像と音の圧縮は、あえて情報を捨てて容量を削ります。WAV を MP3 に変換すると <code>project.json</code> も書き換わります。元のファイルは必ず残してください。</p>
         </div>
 
         <div class="ledger" id="ledger" hidden>
@@ -148,16 +162,19 @@
           <summary>何をどう圧縮するか</summary>
           <div class="notes-body">
             <ul>
-              <li><strong>PNG コスチューム</strong>は指定した色数以下のパレットに減色し、インデックス PNG として書き戻します。完全な透明部分は透明のまま保ちます。</li>
-              <li><strong>JPEG コスチューム</strong>は指定した品質で再エンコードします。画素数は変えないので、回転中心はずれません。</li>
-              <li><strong>SVG コスチューム</strong>はコメント、エディタのメタデータ、未使用の名前空間、余分な座標桁を削ります。</li>
-              <li><strong>WAV 音声</strong>は再サンプリングし、モノラル化もできます。<strong>MP3 音声</strong>は ID3 タグの除去のみです（ブラウザに MP3 エンコーダがないため）。</li>
+              <li><strong>PNG コスチューム</strong>はパレットに減色してインデックス PNG として書き戻し、さらに <strong>OxiPNG</strong> で無劣化圧縮します。透明を保つパレットやディザ付きパレットも選べます。</li>
+              <li><strong>JPEG コスチューム</strong>は <strong>MozJPEG</strong> で指定した品質に再エンコードします。画素数は変えないので回転中心はずれません。</li>
+              <li><strong>SVG コスチューム</strong>は <strong>SVGO</strong> で最適化します（コメント、メタデータ、編集ソフトの名前空間、パスデータ、余分な桁）。</li>
+              <li><strong>WAV 音声</strong>は帯域制限付きフィルタで再サンプリングし、モノラル化もできます。LAME による <strong>MP3 変換</strong>も可能です。</li>
+              <li><strong>MP3 音声</strong>は ID3 タグの除去、または低ビットレートでの再エンコードができます。</li>
               <li>書き出したバイト列が元より小さくなる場合だけ差し替えます。それ以外はそのまま残します。</li>
             </ul>
             <p class="fine">
               ファイル名と形式は変えないので、<code>project.json</code> は
-              バイト単位で同一のままです。Scratch VM は名前でコスチュームと音を
-              読み込むため、プロジェクトはこれまでと同じように開いて動きます。
+              バイト単位で同一のままです。ただし WAV を MP3 に変換した場合だけ、
+              そのアセットの <code>md5ext</code> と <code>dataFormat</code> を
+              更新します。Scratch VM は名前でコスチュームと音を読み込むため、
+              プロジェクトはこれまでと同じように開いて動きます。
             </p>
           </div>
         </details>

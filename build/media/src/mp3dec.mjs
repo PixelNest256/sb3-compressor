@@ -1,0 +1,1 @@
+export { MPEGDecoder } from "mpg123-decoder";

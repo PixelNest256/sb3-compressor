@@ -184,22 +184,29 @@ costumes and sounds are unchanged.
 ### Media compressor
 
 `docs/media/` is a second, independent tool for the same kind of file. Instead
-of the project logic, it re-compresses the media:
+of the project logic, it re-compresses the media, using vendored codecs:
 
-- **PNG** costumes are reduced to a palette and rewritten as indexed PNGs
-  (transparent pixels stay transparent).
-- **JPEG** costumes are re-encoded at a chosen quality. Pixel dimensions never
-  change, so rotation centres stay valid.
-- **SVG** costumes lose comments, metadata, editor namespaces, and excess
-  coordinate digits.
-- **WAV** sounds are resampled and can be downmixed to mono (pure JS).
-- **MP3** sounds only have their ID3 tags stripped.
+- **PNG** costumes are reduced to a palette (with optional dithering) and
+  written as indexed PNGs, then squeezed losslessly by **OxiPNG**. Transparent
+  pixels stay transparent.
+- **JPEG** costumes are re-encoded by **MozJPEG** at a chosen quality. Pixel
+  dimensions never change, so rotation centres stay valid.
+- **SVG** costumes are optimised by **SVGO**.
+- **WAV** sounds are resampled with a band-limited filter, downmixed, or
+  transcoded to **MP3** with the LAME encoder.
+- **MP3** sounds have their ID3 tags stripped, or are re-encoded at a lower
+  bitrate (mpg123 decode + LAME encode).
 
-It works in an *auto* mode (Light / Balanced / Strong presets) or a *manual*
-mode that lists every asset and lets you pick a method for each one. File names
-and formats never change and `project.json` is copied through byte-for-byte, so
-the project opens unchanged. This compression is lossy and irreversible — keep
-a copy of the original file.
+It works in an *auto* mode (Light / Balanced / Strong presets, plus optional
+WAV→MP3 and MP3 re-encode) or a *manual* mode that lists every asset and lets
+you pick a method for each one. File names and formats never change —
+`project.json` is copied through byte-for-byte — unless a WAV sound is converted
+to MP3, in which case that asset's `md5ext` and `dataFormat` are updated. This
+compression is lossy and irreversible; keep a copy of the original file.
+
+The codecs are prebuilt into `docs/media/vendor/` by `build/media/`
+(`npm install && node build.mjs`); the output is committed, so a normal checkout
+needs nothing else. See `docs/media/vendor/LICENSE.md` for attributions.
 
 ### Tests
 

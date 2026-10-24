@@ -3,15 +3,16 @@
  * file, then repacks the zip. Everything runs in the tab: no upload, no
  * server, no Python.
  *
- *   images : PNG  -> palette + lossy quantisation (indexed PNG, our own writer)
- *            JPEG -> re-encode through a canvas at a chosen quality
- *   vector : SVG  -> drop comments / metadata / editor cruft, round path data
- *   audio  : WAV  -> resample, downmix, re-encode PCM (pure JS, worker-safe)
- *            MP3  -> strip ID3v2 / ID3v1 tags (no re-encode in the browser)
+ * Codecs (vendored under vendor/, loaded lazily):
+ *   images : PNG  -> palette quantisation (own writer) + OxiPNG lossless pass
+ *            JPEG -> MozJPEG (WASM)
+ *   vector : SVG  -> SVGO
+ *   audio  : WAV  -> windowed-sinc resample, PCM re-encode, or MP3 transcode
+ *            MP3  -> ID3 tag strip, or re-encode (mpg123 decode + LAME encode)
  *
- * Media keeps its original file name and format, so project.json never has to
- * change: the Scratch VM loads a costume/sound by its `md5ext` name and does
- * not re-hash the bytes.
+ * Media keeps its file name and format unless a method explicitly converts a
+ * sound to MP3, in which case project.json is updated. Otherwise project.json
+ * is copied through untouched.
  */
 (function (root, factory) {
   "use strict";
@@ -21,11 +22,15 @@
 })(typeof self !== "undefined" ? self : globalThis, function () {
   "use strict";
 
+  const G = (typeof self !== "undefined") ? self
+    : (typeof globalThis !== "undefined" ? globalThis : {});
+
   // ------------------------------------------------------------------
   // small helpers
 
   const isU8 = (v) => v instanceof Uint8Array;
   const asU8 = (v) => (isU8(v) ? v : new Uint8Array(v));
+  const isDict = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 
   function concatBytes(parts) {
     let total = 0;
@@ -67,11 +72,13 @@
     const dot = name.lastIndexOf(".");
     return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
   }
-
+  function baseNoExt(name) {
+    const dot = name.lastIndexOf(".");
+    return dot >= 0 ? name.slice(0, dot) : name;
+  }
   function baseName(name) {
     return String(name || "").split(/[\\/]/).pop() || "project.sb3";
   }
-
   function defaultOutputName(inPath) {
     const base = baseName(inPath);
     const dot = base.lastIndexOf(".");
@@ -79,6 +86,114 @@
     let ext = dot > 0 ? base.slice(dot).toLowerCase() : ".sb3";
     if (ext !== ".sb3") ext = ".sb3";
     return root + "_media" + ext;
+  }
+
+  // ------------------------------------------------------------------
+  // vendor loading (WASM codecs + SVGO) and BASE URL
+
+  const SELF_URL = (function () {
+    try {
+      if (typeof document !== "undefined" && document.currentScript && document.currentScript.src) {
+        return document.currentScript.src;
+      }
+    } catch (_) { /* ignore */ }
+    try { if (typeof self !== "undefined" && self.location && self.location.href) return self.location.href; } catch (_) { /* ignore */ }
+    try { if (typeof location !== "undefined" && location.href) return location.href; } catch (_) { /* ignore */ }
+    return "";
+  })();
+  const BASE = (function () {
+    if (!SELF_URL) return "";
+    try { return new URL(".", SELF_URL).href; } catch (_) { return ""; }
+  })();
+
+  const vendorPromises = new Map();
+
+  function loadVendorScript(url) {
+    if (typeof importScripts === "function") {
+      return Promise.resolve().then(() => { importScripts(url); });
+    }
+    return new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = url;
+      s.onload = () => { s.remove(); resolve(); };
+      s.onerror = () => { s.remove(); reject(new Error("Could not load " + url)); };
+      document.head.appendChild(s);
+    });
+  }
+
+  function ensureVendor(name) {
+    if (!vendorPromises.has(name)) {
+      const p = loadVendorScript(BASE + "vendor/" + name + ".js")
+        .catch((error) => { vendorPromises.delete(name); throw error; });
+      vendorPromises.set(name, p);
+    }
+    return vendorPromises.get(name);
+  }
+
+  const wasmCache = new Map();
+  async function loadWasmModule(url) {
+    if (!wasmCache.has(url)) {
+      wasmCache.set(url, (async () => {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Could not fetch " + url);
+        return WebAssembly.compile(await res.arrayBuffer());
+      })());
+    }
+    return wasmCache.get(url);
+  }
+
+  let jpegReady = null;
+  function ensureJpeg() {
+    if (!jpegReady) {
+      jpegReady = (async () => {
+        await ensureVendor("jpeg");
+        if (!G.JSQ_JPEG) throw new Error("jpeg codec unavailable");
+        await G.JSQ_JPEG.init(await loadWasmModule(BASE + "vendor/mozjpeg_enc.wasm"));
+        return G.JSQ_JPEG;
+      })().catch((error) => { jpegReady = null; throw error; });
+    }
+    return jpegReady;
+  }
+
+  let oxipngReady = null;
+  function ensureOxipng() {
+    if (!oxipngReady) {
+      oxipngReady = (async () => {
+        await ensureVendor("oxipng");
+        if (!G.JSQ_OXIPNG) throw new Error("oxipng codec unavailable");
+        await G.JSQ_OXIPNG.init(await loadWasmModule(BASE + "vendor/oxipng_bg.wasm"));
+        return G.JSQ_OXIPNG;
+      })().catch((error) => { oxipngReady = null; throw error; });
+    }
+    return oxipngReady;
+  }
+
+  let mp3EncoderPromise = null;
+  function getMp3Encoder() {
+    if (!mp3EncoderPromise) {
+      mp3EncoderPromise = (async () => {
+        await ensureVendor("mp3");
+        if (!G.WME) throw new Error("mp3 encoder unavailable");
+        return await G.WME.createMp3Encoder();
+      })().catch((error) => { mp3EncoderPromise = null; throw error; });
+    }
+    return mp3EncoderPromise;
+  }
+
+  async function svgoOptimize(text, level) {
+    await ensureVendor("svgo");
+    if (!G.SVGO || typeof G.SVGO.optimize !== "function") throw new Error("svgo unavailable");
+    const precision = level === "safe" ? 3 : level === "aggressive" ? 1 : 2;
+    const res = G.SVGO.optimize(text, {
+      multipass: level !== "safe",
+      floatPrecision: precision,
+      plugins: [{
+        name: "preset-default",
+        params: { overrides: { removeViewBox: false, cleanupIds: level !== "safe" } }
+      }]
+    });
+    if (!res || typeof res.data !== "string") throw new Error("svgo failed");
+    return res.data;
   }
 
   // ------------------------------------------------------------------
@@ -128,9 +243,6 @@
     return out;
   }
 
-  // Build RGB histograms, keeping transparency in its own class so that a
-  // fully transparent region is never averaged into an opaque colour (which
-  // would turn clear areas into grey ghosts).
   function buildHistograms(rgba) {
     const SIZE = 4096;
     const make = () => ({
@@ -161,7 +273,6 @@
     return { transparent, solid: toEntries(solid), soft: toEntries(soft) };
   }
 
-  // Median cut over RGB. Alpha is carried through as a weighted average.
   function medianCut(entries, maxColors) {
     if (maxColors < 1 || !entries.length) return [];
     if (entries.length <= maxColors) {
@@ -170,7 +281,6 @@
         a: Math.round(e.a), count: e.count
       }));
     }
-
     const makeBox = (items) => {
       let minR = 255, maxR = 0, minG = 255, maxG = 0, minB = 255, maxB = 0;
       let count = 0, sr = 0, sg = 0, sb = 0, sa = 0;
@@ -187,7 +297,6 @@
         avg: { r: sr / count, g: sg / count, b: sb / count, a: sa / count }
       };
     };
-
     let boxes = [makeBox(entries)];
     while (boxes.length < maxColors) {
       let pick = -1, bestScore = -1;
@@ -214,14 +323,41 @@
       if (split >= items.length) split = items.length - 1;
       boxes.splice(pick, 1, makeBox(items.slice(0, split)), makeBox(items.slice(split)));
     }
-
     return boxes.map((b) => ({
       r: Math.round(b.avg.r), g: Math.round(b.avg.g),
       b: Math.round(b.avg.b), a: Math.round(b.avg.a), count: b.count
     }));
   }
 
-  // Map each 4-4-4 RGB bucket to its nearest palette index once.
+  // Lloyd (k-means) refinement of a palette against the histogram buckets.
+  function refinePalette(entries, palette, iterations) {
+    let pal = palette.map((p) => ({ r: p.r, g: p.g, b: p.b, a: p.a, count: p.count }));
+    if (pal.length < 2) return pal;
+    for (let it = 0; it < iterations; it++) {
+      const n = pal.length;
+      const sr = new Float64Array(n), sg = new Float64Array(n);
+      const sb = new Float64Array(n), sa = new Float64Array(n), cnt = new Float64Array(n);
+      for (const e of entries) {
+        let best = 0, bd = Infinity;
+        for (let p = 0; p < n; p++) {
+          const dr = e.r - pal[p].r, dg = e.g - pal[p].g, db = e.b - pal[p].b;
+          const d = dr * dr + dg * dg + db * db;
+          if (d < bd) { bd = d; best = p; }
+        }
+        const w = e.count;
+        sr[best] += e.r * w; sg[best] += e.g * w; sb[best] += e.b * w;
+        sa[best] += e.a * w; cnt[best] += w;
+      }
+      for (let p = 0; p < n; p++) {
+        if (!cnt[p]) continue;
+        pal[p] = { r: sr[p] / cnt[p], g: sg[p] / cnt[p], b: sb[p] / cnt[p], a: sa[p] / cnt[p], count: cnt[p] };
+      }
+    }
+    return pal.map((p) => ({
+      r: Math.round(p.r), g: Math.round(p.g), b: Math.round(p.b), a: Math.round(p.a), count: p.count
+    }));
+  }
+
   function buildLut(palette) {
     const lut = new Int16Array(1 << 12);
     for (let k = 0; k < (1 << 12); k++) {
@@ -240,41 +376,120 @@
     return lut;
   }
 
-  async function encodeIndexedPng(rgba, width, height, maxColors) {
+  function buildLut5(palette) {
+    const lut = new Uint8Array(1 << 15);
+    for (let k = 0; k < (1 << 15); k++) {
+      const r = ((k >> 10) & 31) * 8 + 4;
+      const g = ((k >> 5) & 31) * 8 + 4;
+      const b = (k & 31) * 8 + 4;
+      let best = 0, bestD = Infinity;
+      for (let p = 0; p < palette.length; p++) {
+        const c = palette[p];
+        const dr = r - c.r, dg = g - c.g, db = b - c.b;
+        const d = dr * dr + dg * dg + db * db;
+        if (d < bestD) { bestD = d; best = p; if (d === 0) break; }
+      }
+      lut[k] = best;
+    }
+    return lut;
+  }
+
+  // Floyd–Steinberg dithering against an opaque palette.
+  function ditherIndices(rgba, w, h, palette) {
+    const lut = buildLut5(palette);
+    const idxs = new Uint8Array(w * h);
+    const size = (w + 3) * 3;
+    let rowErr = new Float32Array(size);
+    let nextErr = new Float32Array(size);
+    for (let y = 0; y < h; y++) {
+      nextErr.fill(0);
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const eo = (x + 1) * 3;
+        let r = rgba[i] + rowErr[eo];
+        let g = rgba[i + 1] + rowErr[eo + 1];
+        let b = rgba[i + 2] + rowErr[eo + 2];
+        r = r < 0 ? 0 : r > 255 ? 255 : r;
+        g = g < 0 ? 0 : g > 255 ? 255 : g;
+        b = b < 0 ? 0 : b > 255 ? 255 : b;
+        const key = (((r | 0) >> 3) << 10) | (((g | 0) >> 3) << 5) | ((b | 0) >> 3);
+        const p = lut[key];
+        idxs[y * w + x] = p;
+        const c = palette[p];
+        const er = r - c.r, eg = g - c.g, eb = b - c.b;
+        rowErr[eo + 3] += er * 0.4375; nextErr[eo - 3] += er * 0.1875;
+        nextErr[eo] += er * 0.3125; nextErr[eo + 3] += er * 0.0625;
+        rowErr[eo + 4] += eg * 0.4375; nextErr[eo - 2] += eg * 0.1875;
+        nextErr[eo + 1] += eg * 0.3125; nextErr[eo + 4] += eg * 0.0625;
+        rowErr[eo + 5] += eb * 0.4375; nextErr[eo - 1] += eb * 0.1875;
+        nextErr[eo + 2] += eb * 0.3125; nextErr[eo + 5] += eb * 0.0625;
+      }
+      const tmp = rowErr; rowErr = nextErr; nextErr = tmp;
+    }
+    return idxs;
+  }
+
+  async function encodeIndexedPng(rgba, width, height, maxColors, dither) {
     const hist = buildHistograms(rgba);
     if (!hist.solid.length && !hist.soft.length && !hist.transparent) return null;
     const limit = Math.max(2, Math.min(256, maxColors | 0));
 
     const palette = [];
     let tIndex = -1;
-    if (hist.transparent > 0) { tIndex = 0; palette.push({ r: 0, g: 0, b: 0, a: 0, count: hist.transparent }); }
+    let indices = null;
 
-    let budget = limit - palette.length;
-    const totSolid = hist.solid.reduce((s, e) => s + e.count, 0);
-    const totSoft = hist.soft.reduce((s, e) => s + e.count, 0);
-    let solidColors = budget, softColors = 0;
-    if (totSolid > 0 && totSoft > 0) {
-      if (budget <= 1) {
-        if (totSolid >= totSoft) { solidColors = 1; softColors = 0; }
-        else { solidColors = 0; softColors = 1; }
-      } else {
-        softColors = Math.max(1, Math.round(budget * totSoft / (totSolid + totSoft)));
-        solidColors = Math.max(1, budget - softColors);
+    const canDither = !!dither && hist.transparent === 0 && !hist.soft.length && hist.solid.length > 1;
+    if (canDither) {
+      let pal = medianCut(hist.solid, limit);
+      pal = refinePalette(hist.solid, pal, 4);
+      if (pal.length >= 2) {
+        for (const e of pal) palette.push({ r: e.r, g: e.g, b: e.b, a: 255, count: e.count });
+        indices = ditherIndices(rgba, width, height, palette);
       }
-    } else if (totSoft > 0) {
-      softColors = budget; solidColors = 0;
     }
-    const solidPal = medianCut(hist.solid, solidColors).map((e) => ({ ...e, a: 255 }));
-    const softPal = medianCut(hist.soft, softColors).map((e) => ({
-      ...e, a: Math.max(128, Math.min(254, e.a))
-    }));
-    const solidOffset = palette.length;
-    const solidLut = buildLut(solidPal);
-    for (const e of solidPal) palette.push(e);
-    const softOffset = palette.length;
-    const softLut = buildLut(softPal);
-    for (const e of softPal) palette.push(e);
-    if (!palette.length) return null;
+
+    if (!indices) {
+      palette.length = 0;
+      if (hist.transparent > 0) { tIndex = 0; palette.push({ r: 0, g: 0, b: 0, a: 0, count: hist.transparent }); }
+      let budget = limit - palette.length;
+      const totSolid = hist.solid.reduce((s, e) => s + e.count, 0);
+      const totSoft = hist.soft.reduce((s, e) => s + e.count, 0);
+      let solidColors = budget, softColors = 0;
+      if (totSolid > 0 && totSoft > 0) {
+        if (budget <= 1) {
+          if (totSolid >= totSoft) { solidColors = 1; softColors = 0; }
+          else { solidColors = 0; softColors = 1; }
+        } else {
+          softColors = Math.max(1, Math.round(budget * totSoft / (totSolid + totSoft)));
+          solidColors = Math.max(1, budget - softColors);
+        }
+      } else if (totSoft > 0) {
+        softColors = budget; solidColors = 0;
+      }
+      let solidPal = medianCut(hist.solid, solidColors);
+      solidPal = refinePalette(hist.solid, solidPal, 4).map((e) => ({ ...e, a: 255 }));
+      let softPal = medianCut(hist.soft, softColors);
+      softPal = refinePalette(hist.soft, softPal, 4).map((e) => ({
+        ...e, a: Math.max(128, Math.min(254, e.a))
+      }));
+      const solidOffset = palette.length;
+      const solidLut = buildLut(solidPal);
+      for (const e of solidPal) palette.push(e);
+      const softOffset = palette.length;
+      const softLut = buildLut(softPal);
+      for (const e of softPal) palette.push(e);
+      if (!palette.length) return null;
+
+      indices = new Uint8Array(width * height);
+      for (let i = 0, p = 0; i < rgba.length; i += 4, p++) {
+        const a = rgba[i + 3];
+        const k = ((rgba[i] >> 4) << 8) | ((rgba[i + 1] >> 4) << 4) | (rgba[i + 2] >> 4);
+        if (a < 128 && tIndex >= 0) { indices[p] = tIndex; continue; }
+        if (a < 128) { indices[p] = solidOffset + solidLut[k]; continue; }
+        if (a >= 224 || !softPal.length) indices[p] = solidOffset + solidLut[k];
+        else indices[p] = softOffset + softLut[k];
+      }
+    }
 
     let depth;
     if (palette.length <= 2) depth = 1;
@@ -282,24 +497,11 @@
     else if (palette.length <= 16) depth = 4;
     else depth = 8;
 
-    const indices = new Uint8Array(width * height);
-    for (let i = 0, p = 0; i < rgba.length; i += 4, p++) {
-      const a = rgba[i + 3];
-      const k = ((rgba[i] >> 4) << 8) | ((rgba[i + 1] >> 4) << 4) | (rgba[i + 2] >> 4);
-      if (a < 128 && tIndex >= 0) { indices[p] = tIndex; continue; }
-      if (a < 128) { indices[p] = solidOffset + solidLut[k]; continue; }
-      if (a >= 224 || !softPal.length) {
-        indices[p] = solidOffset + solidLut[k];
-      } else {
-        indices[p] = softOffset + softLut[k];
-      }
-    }
-
     const rowBytes = (width * depth + 7) >> 3;
     const raw = new Uint8Array(height * (1 + rowBytes));
     for (let y = 0; y < height; y++) {
       const rowStart = y * (1 + rowBytes);
-      raw[rowStart] = 0; // filter: none
+      raw[rowStart] = 0;
       const base = y * width;
       for (let x = 0; x < width; x++) {
         const idx = indices[base + x];
@@ -322,7 +524,7 @@
     dv.setUint32(0, width);
     dv.setUint32(4, height);
     ihdr[8] = depth;
-    ihdr[9] = 3; // colour type: palette
+    ihdr[9] = 3;
     ihdr[10] = 0;
     ihdr[11] = 0;
     ihdr[12] = 0;
@@ -351,29 +553,22 @@
   // ------------------------------------------------------------------
   // canvas helpers: work both in a Worker (OffscreenCanvas) and on the page
 
-  const MIME = {
-    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg",
-    svg: "image/svg+xml", bmp: "image/bmp", gif: "image/gif"
-  };
+  const MIME = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", svg: "image/svg+xml" };
 
   function hasCanvas() {
     return typeof OffscreenCanvas !== "undefined" ||
       (typeof document !== "undefined" && !!document.createElement);
   }
-
   function makeCanvas(w, h) {
     if (typeof OffscreenCanvas !== "undefined") return new OffscreenCanvas(w, h);
     const c = document.createElement("canvas");
     c.width = w; c.height = h;
     return c;
   }
-
   async function decodeImage(data, mime) {
     const blob = new Blob([data], { type: mime });
     if (typeof createImageBitmap === "function") {
-      try {
-        return await createImageBitmap(blob);
-      } catch (_) { /* fall through to <img> */ }
+      try { return await createImageBitmap(blob); } catch (_) { /* fall through */ }
     }
     if (typeof document === "undefined") throw new Error("no image decoder");
     return await new Promise((resolve, reject) => {
@@ -384,11 +579,9 @@
       img.src = url;
     });
   }
-
   async function canvasToBytes(canvas, type, quality) {
     if (typeof canvas.convertToBlob === "function") {
-      const blob = await canvas.convertToBlob(
-        quality == null ? { type } : { type, quality });
+      const blob = await canvas.convertToBlob(quality == null ? { type } : { type, quality });
       return new Uint8Array(await blob.arrayBuffer());
     }
     return await new Promise((resolve, reject) => {
@@ -402,6 +595,17 @@
   // ------------------------------------------------------------------
   // image compression
 
+  async function oxipngOptimise(bytes, level) {
+    try {
+      const m = await ensureOxipng();
+      const res = await m.optimise(bytes, { level: level || 2, interlace: false, optimiseAlpha: false });
+      const out = new Uint8Array(res);
+      return out.length ? out : bytes;
+    } catch (_) {
+      return bytes;
+    }
+  }
+
   async function compressPng(data, params) {
     if (!hasCanvas()) return null;
     const bmp = await decodeImage(data, MIME.png);
@@ -412,9 +616,19 @@
     ctx.drawImage(bmp, 0, 0, w, h);
     if (bmp.close) bmp.close();
     const img = ctx.getImageData(0, 0, w, h);
-    const out = await encodeIndexedPng(img.data, w, h, params.colors || 128);
+    let out = await encodeIndexedPng(img.data, w, h, params.colors || 128, params.dither);
     if (!out) return null;
-    return { bytes: out, note: `${w}×${h}, ${params.colors} colours` };
+    out = await oxipngOptimise(out, params.oxilevel);
+    return {
+      bytes: out,
+      note: `${w}×${h}, ${params.colors} colours` + (params.dither ? ", dithered" : "")
+    };
+  }
+
+  async function compressPngLossless(data, params) {
+    const out = await oxipngOptimise(data, params.level || 3);
+    if (!out || out.length >= data.length) return null;
+    return { bytes: out, note: "lossless optimize" };
   }
 
   async function compressJpeg(data, params) {
@@ -427,15 +641,28 @@
     ctx.fillRect(0, 0, w, h);
     ctx.drawImage(bmp, 0, 0, w, h);
     if (bmp.close) bmp.close();
-    const out = await canvasToBytes(canvas, MIME.jpg, params.quality || 0.72);
-    return {
-      bytes: out,
-      note: `${w}×${h}, q${Math.round((params.quality || 0.72) * 100)}`
-    };
+    let quality = params.quality || 72;
+    if (quality <= 1) quality = Math.round(quality * 100);
+    const img = ctx.getImageData(0, 0, w, h);
+    let out = null;
+    try {
+      const m = await ensureJpeg();
+      out = new Uint8Array(await m.encode(img, {
+        quality,
+        progressive: true,
+        optimize_coding: true,
+        trellis_multipass: true,
+        trellis_opt_zero: true,
+        chroma_subsample: 2
+      }));
+    } catch (_) {
+      out = await canvasToBytes(canvas, MIME.jpg, quality / 100);
+    }
+    return { bytes: out, note: `${w}×${h}, q${quality}` };
   }
 
   // ------------------------------------------------------------------
-  // SVG optimiser (text level, no DOM)
+  // SVG
 
   function roundPathData(value, decimals) {
     return value.replace(/-?\d*\.?\d+(?:[eE][-+]?\d+)?/g, (m) => {
@@ -448,51 +675,50 @@
     });
   }
 
-  function optimizeSvg(src, level) {
+  function optimizeSvgRegex(src, level) {
     let s = src.replace(/^\uFEFF/, "");
     s = s.replace(/<\?xml[^>]*\?>\s*/i, "");
     s = s.replace(/<!DOCTYPE[^>]*>\s*/i, "");
     s = s.replace(/<!--[\s\S]*?-->/g, "");
     s = s.replace(/<metadata\b[\s\S]*?<\/metadata>/gi, "");
     s = s.replace(/<metadata\b[^>]*\/>/gi, "");
-
     if (level !== "safe") {
-      // drop editor namespace elements and their subtrees
       s = s.replace(/<(sodipodi|inkscape|rdf|dc|cc):[A-Za-z][\w.-]*\b[\s\S]*?<\/\1:[A-Za-z][\w.-]*>/g, "");
       s = s.replace(/<(?:sodipodi|inkscape|rdf|dc|cc):[A-Za-z][\w.-]*\b[^>]*\/>/g, "");
-      // drop editor / private attributes (both quote styles)
       s = s.replace(/\s(?:inkscape|sodipodi|xmlns:inkscape|xmlns:sodipodi|xmlns:dc|xmlns:cc|xmlns:rdf):[A-Za-z][\w.-]*\s*=\s*"[^"]*"/g, "");
       s = s.replace(/\s(?:inkscape|sodipodi|xmlns:inkscape|xmlns:sodipodi|xmlns:dc|xmlns:cc|xmlns:rdf):[A-Za-z][\w.-]*\s*=\s*'[^']*'/g, "");
       s = s.replace(/\sdata-[A-Za-z][\w.-]*\s*=\s*"[^"]*"/g, "");
       s = s.replace(/\sdata-[A-Za-z][\w.-]*\s*=\s*'[^']*'/g, "");
-      // drop now-unused editor namespace declarations
       s = s.replace(/\sxmlns:(?:inkscape|sodipodi|dc|cc|rdf)\s*=\s*"[^"]*"/g, "");
       s = s.replace(/\sxmlns:(?:inkscape|sodipodi|dc|cc|rdf)\s*=\s*'[^']*'/g, "");
     }
-
     if (level === "balanced" || level === "aggressive") {
       const decimals = level === "aggressive" ? 1 : 2;
       s = s.replace(/\bd\s*=\s*"([^"]*)"/g, (m, v) => 'd="' + roundPathData(v, decimals) + '"');
       s = s.replace(/\bpoints\s*=\s*"([^"]*)"/g, (m, v) => 'points="' + roundPathData(v, decimals) + '"');
     }
-
     s = s.replace(/>\s+</g, "><");
-    s = s.trim();
-    return s;
+    return s.trim();
   }
 
-  function compressSvg(data, params) {
+  async function compressSvg(data, params) {
     const src = new TextDecoder("utf-8").decode(data);
     if (!/<svg[\s>]/i.test(src)) return null;
-    const out = optimizeSvg(src, params.level || "balanced");
-    if (!/<svg[\s>]/i.test(out)) return null;
+    const level = params.level || "balanced";
+    let out = null;
+    try {
+      out = await svgoOptimize(src, level);
+    } catch (_) {
+      out = null;
+    }
+    if (!out || !/<svg[\s>]/i.test(out)) out = optimizeSvgRegex(src, level);
     const bytes = new TextEncoder().encode(out);
     if (bytes.length >= data.length) return null;
-    return { bytes, note: `${params.level || "balanced"} clean-up` };
+    return { bytes, note: `SVGO ${level}` };
   }
 
   // ------------------------------------------------------------------
-  // WAV: parse, resample, re-encode PCM
+  // WAV: parse, resample (windowed sinc), re-encode PCM
 
   function parseWav(bytes) {
     if (bytes.length < 44) return null;
@@ -522,17 +748,16 @@
     if (!fmt || dataOff < 0 || !fmt.channels || !fmt.sampleRate) return null;
     fmt.dataOffset = dataOff;
     fmt.dataLength = dataLen;
-    fmt.extraBytes = bytes.length - (dataOff + dataLen);
     return fmt;
   }
 
   function wavToChannels(bytes, fmt) {
     const { channels, bitsPerSample, format, dataOffset, dataLength } = fmt;
-    const frames = Math.floor(dataLength / (channels * (bitsPerSample >> 3)));
+    const bytesPerSample = bitsPerSample >> 3;
+    const frames = Math.floor(dataLength / (channels * bytesPerSample));
     const out = [];
     for (let c = 0; c < channels; c++) out.push(new Float32Array(frames));
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const bytesPerSample = bitsPerSample >> 3;
     for (let f = 0; f < frames; f++) {
       for (let c = 0; c < channels; c++) {
         const at = dataOffset + (f * channels + c) * bytesPerSample;
@@ -556,17 +781,49 @@
     return out;
   }
 
+  function buildResampleKernel(cutoff, taps, phases) {
+    const half = (taps >> 1) - 1;
+    const table = new Float32Array(phases * taps);
+    for (let p = 0; p < phases; p++) {
+      const frac = p / phases;
+      let norm = 0;
+      for (let t = 0; t < taps; t++) {
+        const hx = (t - half) - frac;
+        const s = hx === 0 ? 2 * cutoff : Math.sin(2 * Math.PI * cutoff * hx) / (Math.PI * hx);
+        const w = 0.5 - 0.5 * Math.cos(2 * Math.PI * t / (taps - 1));
+        const c = s * w;
+        table[p * taps + t] = c;
+        norm += c;
+      }
+      for (let t = 0; t < taps; t++) table[p * taps + t] /= norm;
+    }
+    return table;
+  }
+
+  // Band-limited resampler (removes the aliasing of naive interpolation).
   function resampleChannel(src, inRate, outRate) {
-    if (inRate === outRate) return src;
-    const outLen = Math.max(1, Math.round(src.length * outRate / inRate));
-    const out = new Float32Array(outLen);
+    if (inRate === outRate || !src.length) return src;
+    const ratio = outRate / inRate;
+    const taps = 32, phases = 256, half = (taps >> 1) - 1;
+    const cutoff = 0.5 * Math.min(1, ratio) * 0.98;
+    const table = buildResampleKernel(cutoff, taps, phases);
+    const outLen = Math.max(1, Math.round(src.length * ratio));
     const last = src.length - 1;
+    const out = new Float32Array(outLen);
     for (let i = 0; i < outLen; i++) {
-      const pos = i * inRate / outRate;
-      const i0 = Math.min(last, Math.floor(pos));
-      const i1 = Math.min(last, i0 + 1);
-      const frac = pos - i0;
-      out[i] = src[i0] * (1 - frac) + src[i1] * frac;
+      const pos = i / ratio;
+      const center = Math.floor(pos);
+      const frac = pos - center;
+      const ph = Math.min(phases - 1, (frac * phases) | 0);
+      const base = ph * taps;
+      const start = center - half;
+      let acc = 0;
+      for (let t = 0; t < taps; t++) {
+        let idx = start + t;
+        if (idx < 0) idx = 0; else if (idx > last) idx = last;
+        acc += src[idx] * table[base + t];
+      }
+      out[i] = acc;
     }
     return out;
   }
@@ -592,7 +849,7 @@
     const wr = (o, s) => { for (let i = 0; i < s.length; i++) out[o + i] = s.charCodeAt(i); };
     wr(0, "RIFF"); dv.setUint32(4, 36 + dataLen, true); wr(8, "WAVE");
     wr(12, "fmt "); dv.setUint32(16, 16, true);
-    dv.setUint16(20, 1, true);          // PCM
+    dv.setUint16(20, 1, true);
     dv.setUint16(22, numCh, true);
     dv.setUint32(24, sampleRate, true);
     dv.setUint32(28, sampleRate * numCh * bytesPerSample, true);
@@ -604,17 +861,13 @@
       for (let c = 0; c < numCh; c++) {
         let v = channels[c][f];
         if (v > 1) v = 1; else if (v < -1) v = -1;
-        if (bitsPerSample === 8) {
-          out[at++] = Math.max(0, Math.min(255, Math.round(v * 127 + 128)));
-        } else if (bitsPerSample === 16) {
-          dv.setInt16(at, Math.round(v * 32767), true); at += 2;
-        } else if (bitsPerSample === 24) {
+        if (bitsPerSample === 8) out[at++] = Math.max(0, Math.min(255, Math.round(v * 127 + 128)));
+        else if (bitsPerSample === 16) { dv.setInt16(at, Math.round(v * 32767), true); at += 2; }
+        else if (bitsPerSample === 24) {
           let s = Math.round(v * 8388607);
           if (s < 0) s += 0x1000000;
           out[at++] = s & 0xFF; out[at++] = (s >> 8) & 0xFF; out[at++] = (s >> 16) & 0xFF;
-        } else {
-          dv.setInt32(at, Math.round(v * 2147483647), true); at += 4;
-        }
+        } else { dv.setInt32(at, Math.round(v * 2147483647), true); at += 4; }
       }
     }
     return out;
@@ -623,16 +876,13 @@
   function compressWav(data, params) {
     const fmt = parseWav(data);
     if (!fmt) return null;
-    const channels = wavToChannels(data, fmt);
-    let chans = channels;
+    let chans = wavToChannels(data, fmt);
     const targetRate = params.rate && params.rate > 0 ? params.rate : fmt.sampleRate;
     const rate = Math.min(targetRate, fmt.sampleRate);
     let outBits = params.bits && params.bits > 0 ? params.bits : fmt.bitsPerSample;
     if (![8, 16, 24, 32].includes(outBits)) outBits = 16;
     if (params.mono && chans.length > 1) chans = downmix(chans);
-    if (rate !== fmt.sampleRate) {
-      chans = chans.map((c) => resampleChannel(c, fmt.sampleRate, rate));
-    }
+    if (rate !== fmt.sampleRate) chans = chans.map((c) => resampleChannel(c, fmt.sampleRate, rate));
     const out = encodeWav(chans, rate, outBits);
     if (out.length >= data.length) return null;
     const notes = [];
@@ -644,7 +894,7 @@
   }
 
   // ------------------------------------------------------------------
-  // MP3: strip ID3v2 / ID3v1 tags (browser cannot re-encode MP3)
+  // MP3: tag strip, encode, decode + re-encode
 
   function stripMp3Tags(data) {
     let start = 0, end = data.length;
@@ -653,7 +903,7 @@
       const size = ((data[6] & 0x7F) << 21) | ((data[7] & 0x7F) << 14) |
         ((data[8] & 0x7F) << 7) | (data[9] & 0x7F);
       start = 10 + size;
-      if (flags & 0x10) start += 10; // footer
+      if (flags & 0x10) start += 10;
     }
     if (end - start > 128 &&
         data[end - 128] === 0x54 && data[end - 127] === 0x41 && data[end - 126] === 0x47) {
@@ -663,19 +913,81 @@
     return data.subarray(start, end);
   }
 
-  function compressMp3(data, params) {
-    if (!params.stripTags) return null;
+  function compressMp3Tags(data) {
     const out = stripMp3Tags(data);
     if (!out || out.length >= data.length) return null;
-    const saved = data.length - out.length;
-    return { bytes: out, note: `tags stripped (−${humanSize(saved)})` };
+    return { bytes: out, note: `tags stripped (−${humanSize(data.length - out.length)})` };
+  }
+
+  async function mp3EncodeChannels(channels, sampleRate, bitrate) {
+    if (!channels.length || !channels[0].length) return null;
+    const enc = await getMp3Encoder();
+    enc.configure({ sampleRate, channels: channels.length, bitrate });
+    const parts = [];
+    parts.push(new Uint8Array(enc.encode(channels)));
+    parts.push(new Uint8Array(enc.finalize()));
+    return concatBytes(parts);
+  }
+
+  async function mp3Decode(data) {
+    await ensureVendor("mp3dec");
+    if (!G.WAD_MP3) throw new Error("mp3 decoder unavailable");
+    const dec = new G.WAD_MP3.MPEGDecoder();
+    await dec.ready;
+    const res = dec.decode(data);
+    dec.free();
+    if (!res || !res.channelData || !res.channelData.length) return null;
+    return { channels: res.channelData, sampleRate: res.sampleRate, frames: res.samplesDecoded };
+  }
+
+  async function compressWavToMp3(data, params) {
+    const fmt = parseWav(data);
+    if (!fmt) return null;
+    let chans = wavToChannels(data, fmt);
+    if (params.mono && chans.length > 1) chans = downmix(chans);
+    const bitrate = params.bitrate || 128;
+    let out = null;
+    try {
+      out = await mp3EncodeChannels(chans, fmt.sampleRate, bitrate);
+    } catch (_) { out = null; }
+    if (!out || out.length >= data.length) return null;
+    return {
+      bytes: out,
+      note: `${bitrate} kbps MP3${params.mono && fmt.channels > 1 ? ", mono" : ""}`,
+      newExt: "mp3", newFormat: "mp3",
+      audio: { rate: fmt.sampleRate, sampleCount: chans[0].length }
+    };
+  }
+
+  async function compressMp3Reencode(data, params) {
+    let decoded = null;
+    try { decoded = await mp3Decode(data); } catch (_) { decoded = null; }
+    if (!decoded) return null;
+    let chans = decoded.channels;
+    let rate = decoded.sampleRate;
+    if (params.mono && chans.length > 1) chans = downmix(chans);
+    if (params.rate && params.rate > 0 && params.rate < rate) {
+      chans = chans.map((c) => resampleChannel(c, rate, params.rate));
+      rate = params.rate;
+    }
+    const bitrate = params.bitrate || 96;
+    let out = null;
+    try {
+      out = await mp3EncodeChannels(chans, rate, bitrate);
+    } catch (_) { out = null; }
+    if (!out || out.length >= data.length) return null;
+    return {
+      bytes: out,
+      note: `MP3 ${bitrate} kbps${params.mono ? ", mono" : ""}`,
+      audio: { rate, sampleCount: chans[0].length }
+    };
   }
 
   // ------------------------------------------------------------------
-  // classification and metadata (header only, no full decode)
+  // classification and metadata (header only)
 
-  const IMAGE_EXT = new Set(["png", "jpg", "jpeg", "bmp", "gif"]);
-  const AUDIO_EXT = new Set(["wav", "mp3", "ogg", "oga", "m4a", "aac", "flac"]);
+  const IMAGE_EXT = new Set(["bmp", "gif"]);
+  const AUDIO_EXT = new Set(["ogg", "oga", "m4a", "aac", "flac"]);
 
   function kindOf(name) {
     const ext = extOf(name);
@@ -686,7 +998,6 @@
     if (IMAGE_EXT.has(ext) || AUDIO_EXT.has(ext)) return "other-media";
     return "other";
   }
-
   function isCompressible(kind) {
     return kind === "image" || kind === "vector" || kind === "wav" || kind === "mp3";
   }
@@ -696,7 +1007,6 @@
     if (bytes[0] !== 0x89 || bytes[1] !== 0x50) return null;
     return [readU32(bytes, 16), readU32(bytes, 20)];
   }
-
   function jpegSize(bytes) {
     let o = 2;
     while (o + 9 < bytes.length) {
@@ -710,7 +1020,6 @@
     }
     return null;
   }
-
   function svgSize(text) {
     const wm = /width\s*=\s*"([\d.]+)/i.exec(text);
     const hm = /height\s*=\s*"([\d.]+)/i.exec(text);
@@ -719,27 +1028,21 @@
     if (vm) return [Math.round(parseFloat(vm[3])), Math.round(parseFloat(vm[4]))];
     return null;
   }
-
   function wavMeta(bytes) {
     const fmt = parseWav(bytes);
     if (!fmt) return null;
     const frames = fmt.dataLength / (fmt.channels * (fmt.bitsPerSample >> 3) || 1);
     return {
-      width: null, height: null,
       duration: frames / fmt.sampleRate,
-      sampleRate: fmt.sampleRate,
-      channels: fmt.channels,
-      bits: fmt.bitsPerSample
+      sampleRate: fmt.sampleRate, channels: fmt.channels, bits: fmt.bitsPerSample
     };
   }
-
   function describeBytes(bytes, name) {
     const ext = extOf(name);
     if (ext === "png") { const s = pngSize(bytes); return s ? { width: s[0], height: s[1] } : {}; }
     if (ext === "jpg" || ext === "jpeg") { const s = jpegSize(bytes); return s ? { width: s[0], height: s[1] } : {}; }
     if (ext === "svg") {
-      const text = new TextDecoder("utf-8").decode(bytes);
-      const s = svgSize(text);
+      const s = svgSize(new TextDecoder("utf-8").decode(bytes));
       return s ? { width: s[0], height: s[1] } : {};
     }
     if (ext === "wav") return wavMeta(bytes) || {};
@@ -759,9 +1062,7 @@
   async function loadInput(buffer, filename) {
     const name = baseName(filename || "project.sb3");
     const raw = asU8(buffer);
-    if (!name.toLowerCase().endsWith(".sb3")) {
-      throw new Error("Please provide an .sb3 file.");
-    }
+    if (!name.toLowerCase().endsWith(".sb3")) throw new Error("Please provide an .sb3 file.");
     let zip;
     try {
       zip = await getJSZip().loadAsync(raw);
@@ -790,19 +1091,12 @@
       mediaCount += 1;
       mediaBytes += entry.data.length;
       assets.push({
-        name: entry.name,
-        kind,
-        ext: extOf(entry.name),
-        size: entry.data.length,
-        width: meta.width || null,
-        height: meta.height || null,
-        duration: meta.duration || null,
-        sampleRate: meta.sampleRate || null,
-        channels: meta.channels || null,
-        bits: meta.bits || null
+        name: entry.name, kind, ext: extOf(entry.name), size: entry.data.length,
+        width: meta.width || null, height: meta.height || null,
+        duration: meta.duration || null, sampleRate: meta.sampleRate || null,
+        channels: meta.channels || null, bits: meta.bits || null
       });
     }
-    // stable order: images, vectors, audio, then by size desc
     const order = { image: 0, vector: 1, wav: 2, mp3: 3 };
     assets.sort((a, b) => (order[a.kind] - order[b.kind]) || (b.size - a.size));
     return { assets, mediaBytes, totalBytes, mediaCount, entryCount: entries.length };
@@ -813,7 +1107,7 @@
     report("load", 0.5, "Reading file...");
     const loaded = await loadInput(buffer, filename);
     report("load", 1.0, "File read");
-    report("scan", 0.3, "Listing media...");
+    report("scan", 0.5, "Listing media...");
     const info = scanEntries(loaded.entries);
     report("scan", 1.0, "Media listed");
     return {
@@ -828,17 +1122,49 @@
   async function packageSb3(entries, projectBytes, progress) {
     const zip = new (getJSZip())();
     zip.file("project.json", projectBytes, { binary: true });
-    for (const entry of entries) {
-      zip.file(entry.name, entry.data, { binary: true });
-    }
+    for (const entry of entries) zip.file(entry.name, entry.data, { binary: true });
     progress("package", 0.5, "Repacking .sb3...");
     const out = await zip.generateAsync({
-      type: "uint8array",
-      compression: "DEFLATE",
-      compressionOptions: { level: 9 }
+      type: "uint8array", compression: "DEFLATE", compressionOptions: { level: 9 }
     });
     progress("package", 1.0, "Repack complete");
     return out;
+  }
+
+  function mixOf(assets) {
+    const mix = { image: 0, vector: 0, audio: 0 };
+    for (const a of assets) {
+      if (a.kind === "image") mix.image += a.size;
+      else if (a.kind === "vector") mix.vector += a.size;
+      else mix.audio += a.size;
+    }
+    return mix;
+  }
+
+  // Rewrite project.json references after an asset changes format.
+  function applyAssetRenames(project, renames) {
+    let changed = false;
+    const targets = isDict(project) && Array.isArray(project.targets) ? project.targets : [];
+    for (const tgt of targets) {
+      if (!isDict(tgt)) continue;
+      for (const key of ["costumes", "sounds"]) {
+        if (!Array.isArray(tgt[key])) continue;
+        for (const a of tgt[key]) {
+          if (!isDict(a)) continue;
+          const info = (a.md5ext && renames.get(a.md5ext)) || (a.assetId && renames.get(a.assetId));
+          if (!info) continue;
+          a.md5ext = info.newName;
+          a.assetId = info.newId;
+          a.dataFormat = info.newFormat;
+          if (key === "sounds" && info.audio) {
+            if ("rate" in a) a.rate = info.audio.rate;
+            if ("sampleCount" in a) a.sampleCount = info.audio.sampleCount;
+          }
+          changed = true;
+        }
+      }
+    }
+    return changed;
   }
 
   // ------------------------------------------------------------------
@@ -846,68 +1172,55 @@
 
   const PRESETS = {
     light: {
-      jpeg: { quality: 0.82 },
-      png: { colors: 256 },
-      svg: "safe",
-      wav: { rate: 0, bits: 0, mono: false },
-      mp3: { stripTags: true }
+      jpeg: { quality: 85 }, png: { colors: 256, oxilevel: 2 }, svg: "safe",
+      wav: { rate: 0, bits: 0, mono: false }, mp3: { tags: true }
     },
     balanced: {
-      jpeg: { quality: 0.72 },
-      png: { colors: 128 },
-      svg: "balanced",
-      wav: { rate: 22050, bits: 16, mono: false },
-      mp3: { stripTags: true }
+      jpeg: { quality: 72 }, png: { colors: 128, oxilevel: 3 }, svg: "balanced",
+      wav: { rate: 22050, bits: 16, mono: false }, mp3: { tags: true }
     },
     strong: {
-      jpeg: { quality: 0.55 },
-      png: { colors: 64 },
-      svg: "aggressive",
-      wav: { rate: 16000, bits: 16, mono: true },
-      mp3: { stripTags: true }
+      jpeg: { quality: 55 }, png: { colors: 32, oxilevel: 4 }, svg: "aggressive",
+      wav: { rate: 16000, bits: 16, mono: true }, mp3: { tags: true }
     }
   };
 
-  function presetFor(strength) {
-    return PRESETS[strength] || PRESETS.balanced;
-  }
+  function presetFor(strength) { return PRESETS[strength] || PRESETS.balanced; }
 
-  function autoSetting(asset, preset) {
+  function autoSetting(asset, preset, opts) {
+    const o = opts || {};
     if (asset.kind === "image") {
       if (asset.ext === "png") return { method: "png", ...preset.png };
       if (asset.ext === "jpg" || asset.ext === "jpeg") return { method: "jpeg", ...preset.jpeg };
       return { method: "keep" };
     }
     if (asset.kind === "vector") return { method: "svg", level: preset.svg };
-    if (asset.kind === "wav") return { method: "wav", ...preset.wav };
-    if (asset.kind === "mp3") return { method: "mp3", ...preset.mp3 };
+    if (asset.kind === "wav") {
+      if (o.wavToMp3) return { method: "wav2mp3", bitrate: o.wavMp3Bitrate || 96, mono: preset.wav.mono };
+      return { method: "wav", ...preset.wav };
+    }
+    if (asset.kind === "mp3") {
+      if (o.reencodeMp3) return { method: "mp3enc", bitrate: o.mp3Bitrate || 96, mono: false };
+      return { method: "mp3tags" };
+    }
     return { method: "keep" };
   }
 
-  async function compressAsset(asset, setting) {
-    const entry = asset.entry;
-    const data = entry.data;
+  async function compressAsset(data, setting) {
     const method = setting.method || "keep";
-    if (method === "keep") return { entry, changed: false, method: "keep" };
-    let result = null;
     try {
-      if (method === "png") result = await compressPng(data, setting);
-      else if (method === "jpeg") result = await compressJpeg(data, setting);
-      else if (method === "svg") result = compressSvg(data, setting);
-      else if (method === "wav") result = compressWav(data, setting);
-      else if (method === "mp3") result = compressMp3(data, setting);
+      if (method === "png") return await compressPng(data, setting);
+      if (method === "pnglossless") return await compressPngLossless(data, setting);
+      if (method === "jpeg") return await compressJpeg(data, setting);
+      if (method === "svg") return await compressSvg(data, setting);
+      if (method === "wav") return compressWav(data, setting);
+      if (method === "wav2mp3") return await compressWavToMp3(data, setting);
+      if (method === "mp3tags" || method === "mp3") return compressMp3Tags(data);
+      if (method === "mp3enc") return await compressMp3Reencode(data, setting);
     } catch (_) {
-      result = null;
+      return null;
     }
-    if (!result || !result.bytes || result.bytes.length >= data.length) {
-      return { entry, changed: false, method, note: result ? "no gain — kept original" : "kept original" };
-    }
-    return {
-      entry: { name: entry.name, data: result.bytes },
-      changed: true,
-      method,
-      note: result.note || ""
-    };
+    return null;
   }
 
   async function compressBuffer(buffer, filename, options, plan, progress, cancelled) {
@@ -919,8 +1232,6 @@
     const loaded = await loadInput(buffer, filename);
     report("load", 1.0, "File read");
 
-    // Attach each media entry to its inventory record so we compress the same
-    // set the caller saw during the scan.
     const inventory = scanEntries(loaded.entries);
     const byName = new Map();
     for (const entry of loaded.entries) byName.set(entry.name, entry);
@@ -928,8 +1239,9 @@
 
     const preset = presetFor(opts.strength);
     const manual = opts.mode === "manual" && plan && typeof plan === "object";
-
     const targets = inventory.assets;
+    const renames = new Map();
+    const taken = new Set(loaded.entries.map((e) => e.name));
     const results = [];
     let newMediaBytes = 0;
 
@@ -937,38 +1249,78 @@
     for (let i = 0; i < targets.length; i++) {
       if (isCancelled()) throw new Error("Cancelled");
       const asset = targets[i];
-      const setting = manual
-        ? (plan[asset.name] || { method: "keep" })
-        : autoSetting(asset, preset);
-      const res = await compressAsset(asset, setting);
-      if (res.changed) {
-        byName.set(asset.name, res.entry);
-        newMediaBytes += res.entry.data.length;
+      const setting = manual ? (plan[asset.name] || { method: "keep" }) : autoSetting(asset, preset, opts);
+      const res = await compressAsset(asset.entry.data, setting);
+
+      let finalName = asset.name;
+      let changed = false;
+      if (res && res.bytes && res.bytes.length < asset.size) {
+        changed = true;
+        if (res.newExt) {
+          const base = baseNoExt(asset.name);
+          let candidate = base + "." + res.newExt;
+          let n = 1;
+          while (taken.has(candidate) && candidate !== asset.name) { candidate = base + "_" + n + "." + res.newExt; n++; }
+          taken.delete(asset.name);
+          taken.add(candidate);
+          renames.set(asset.name, {
+            newName: candidate,
+            newId: baseNoExt(candidate),
+            newFormat: res.newFormat || res.newExt,
+            audio: res.audio || null
+          });
+          finalName = candidate;
+        }
+        byName.delete(asset.name);
+        byName.set(finalName, { name: finalName, data: res.bytes });
+        newMediaBytes += res.bytes.length;
       } else {
         newMediaBytes += asset.size;
+        if (res && !changed) { /* kept */ }
       }
+
       results.push({
-        name: asset.name,
+        name: finalName,
+        origName: asset.name,
         kind: asset.kind,
-        ext: asset.ext,
+        ext: extOf(finalName),
         origSize: asset.size,
-        newSize: res.changed ? res.entry.data.length : asset.size,
-        changed: res.changed,
-        method: res.method,
-        note: res.note || ""
+        newSize: changed ? res.bytes.length : asset.size,
+        changed,
+        method: setting.method || "keep",
+        formatChanged: !!(res && res.newExt),
+        note: changed ? (res.note || "") : "kept original"
       });
-      report("compress", (i + 1) / Math.max(1, targets.length),
-        `Compressed ${i + 1}/${targets.length}`);
+      report("compress", (i + 1) / Math.max(1, targets.length), `Compressed ${i + 1}/${targets.length}`);
     }
 
-    // Rebuild the entry list, keeping original order; project.json is copied
-    // through untouched.
-    const finalEntries = loaded.entries.map((entry) => byName.get(entry.name) || entry);
+    const finalEntries = loaded.entries.map((entry) => {
+      const replaced = byName.get(entry.name);
+      if (replaced && replaced.name === entry.name && replaced.data !== entry.data) return replaced;
+      const info = renames.get(entry.name);
+      if (info) {
+        const renamed = byName.get(info.newName);
+        if (renamed) return renamed;
+      }
+      return entry;
+    });
+
+    let projectBytes = loaded.pjRaw;
+    let projectChanged = false;
+    if (renames.size) {
+      try {
+        const project = JSON.parse(new TextDecoder("utf-8").decode(loaded.pjRaw));
+        if (applyAssetRenames(project, renames)) {
+          projectBytes = new TextEncoder().encode(JSON.stringify(project));
+          projectChanged = true;
+        }
+      } catch (_) { /* keep original project.json on any parse trouble */ }
+    }
+
     report("package", 0.2, "Repacking .sb3...");
-    const finalBytes = await packageSb3(finalEntries, loaded.pjRaw, report);
+    const finalBytes = await packageSb3(finalEntries, projectBytes, report);
 
     const origMedia = inventory.mediaBytes;
-    const newMedia = newMediaBytes;
     return {
       container: "sb3",
       finalBytes,
@@ -976,24 +1328,16 @@
       origFileSize: asU8(buffer).length,
       newFileSize: finalBytes.length,
       origMediaSize: origMedia,
-      newMediaSize: newMedia,
-      mediaRatio: origMedia ? (1 - newMedia / origMedia) * 100 : 0,
+      newMediaSize: newMediaBytes,
+      mediaRatio: origMedia ? (1 - newMediaBytes / origMedia) * 100 : 0,
       fileRatio: asU8(buffer).length ? (1 - finalBytes.length / asU8(buffer).length) * 100 : 0,
       assetCount: targets.length,
       changedCount: results.filter((r) => r.changed).length,
+      convertedCount: results.filter((r) => r.formatChanged).length,
+      projectChanged,
       results,
       mix: mixOf(inventory.assets)
     };
-  }
-
-  function mixOf(assets) {
-    const mix = { image: 0, vector: 0, audio: 0 };
-    for (const a of assets) {
-      if (a.kind === "image") mix.image += a.size;
-      else if (a.kind === "vector") mix.vector += a.size;
-      else mix.audio += a.size;
-    }
-    return mix;
   }
 
   // ------------------------------------------------------------------
@@ -1016,11 +1360,11 @@
     progressPercent,
     defaultOutputName,
     humanSize,
-    // test hooks for the pure parts (used by the Node QC script)
+    applyAssetRenames,
     __test: {
-      crc32, deflateZlib, encodeIndexedPng, buildHistograms, medianCut,
-      optimizeSvg, compressSvg, parseWav, encodeWav, compressWav,
-      stripMp3Tags, compressMp3, pngSize, jpegSize, svgSize, kindOf
+      crc32, deflateZlib, encodeIndexedPng, buildHistograms, medianCut, refinePalette,
+      optimizeSvgRegex, parseWav, encodeWav, compressWav, stripMp3Tags, compressMp3Tags,
+      resampleChannel, buildResampleKernel, pngSize, jpegSize, svgSize, kindOf
     }
   };
 });
