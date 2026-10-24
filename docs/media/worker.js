@@ -30,7 +30,7 @@ let poolAnnounced = false;
 
 function poolSize() {
   const hc = (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 4;
-  return Math.max(1, Math.min(8, hc - 1));
+  return Math.max(1, Math.min(12, hc - 1));
 }
 
 function createPool() {
@@ -118,7 +118,9 @@ function getRunner() {
     try {
       return await pool.run(bytes, setting);
     } catch (_) {
-      return { changed: false };
+      // A pool worker failed: fall back to compressing in this worker so the
+      // asset is never silently skipped.
+      return await MEDIA.compressAssetBytes(bytes, setting);
     }
   };
 }

@@ -198,10 +198,11 @@ of the project logic, it re-compresses the media, using vendored codecs:
   bitrate (mpg123 decode + LAME encode).
 
 It works in an *auto* mode (Light / Balanced / Strong presets, plus optional
-WAV→MP3, MP3 re-encode, and a PNG lossless pass toggle) or a *manual* mode that
-lists every asset and lets you pick a method for each one. Asset compression is
-spread across a pool of nested Web Workers (one per CPU core, up to 8), so large
-projects finish several times faster. File names and formats never change —
+WAV→MP3, MP3 re-encode, and a PNG lossless pass that is off by default) or a
+*manual* mode that lists every asset and lets you pick a method for each one.
+Asset compression is spread across a pool of nested Web Workers (one per CPU
+core, up to 12), so large projects finish several times faster. File names and
+formats never change —
 `project.json` is copied through byte-for-byte — unless a WAV sound is converted
 to MP3, in which case that asset's `md5ext` and `dataFormat` are updated. This
 compression is lossy and irreversible; keep a copy of the original file.

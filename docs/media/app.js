@@ -240,11 +240,11 @@
   }
 
   function readAudio() {
-    var out = { pngOptimize: true, wavToMp3: false, wavMp3Bitrate: 96, reencodeMp3: false, mp3Bitrate: 96 };
+    var out = { pngOptimize: false, wavToMp3: false, wavMp3Bitrate: 96, reencodeMp3: false, mp3Bitrate: 96 };
     try {
       var s = JSON.parse(localStorage.getItem(AUDIO_KEY) || "null");
       if (s && typeof s === "object") {
-        out.pngOptimize = s.pngOptimize !== false;
+        out.pngOptimize = s.pngOptimize === true;
         out.wavToMp3 = !!s.wavToMp3;
         out.reencodeMp3 = !!s.reencodeMp3;
         if ([64, 96, 128].indexOf(Number(s.wavMp3Bitrate)) >= 0) out.wavMp3Bitrate = Number(s.wavMp3Bitrate);
@@ -255,7 +255,7 @@
   }
 
   function applyAudio(a) {
-    if (el.optPngOptimize) el.optPngOptimize.checked = a.pngOptimize !== false;
+    if (el.optPngOptimize) el.optPngOptimize.checked = a.pngOptimize === true;
     if (el.optWavMp3) el.optWavMp3.checked = !!a.wavToMp3;
     if (el.optMp3Reenc) el.optMp3Reenc.checked = !!a.reencodeMp3;
     if (el.wavMp3Bitrate) el.wavMp3Bitrate.value = String(a.wavMp3Bitrate);
@@ -264,7 +264,7 @@
 
   function saveAudio() {
     var a = {
-      pngOptimize: !(el.optPngOptimize && !el.optPngOptimize.checked),
+      pngOptimize: !!(el.optPngOptimize && el.optPngOptimize.checked),
       wavToMp3: !!(el.optWavMp3 && el.optWavMp3.checked),
       reencodeMp3: !!(el.optMp3Reenc && el.optMp3Reenc.checked),
       wavMp3Bitrate: el.wavMp3Bitrate ? parseInt(el.wavMp3Bitrate.value, 10) : 96,
@@ -803,13 +803,14 @@
   }
 
   function createWorker(buffer, myRun, fallback) {
-    stopWorker();
     var fellBack = { value: false };
-    try {
-      worker = new Worker(APP_BASE + "worker.js");
-    } catch (error) {
-      fallback();
-      return;
+    if (!worker) {
+      try {
+        worker = new Worker(APP_BASE + "worker.js");
+      } catch (error) {
+        fallback();
+        return;
+      }
     }
     worker.onmessage = function (event) {
       if (myRun !== runId) return;
@@ -831,7 +832,11 @@
       if (!running) return;
       setProgress(data.percent || 0);
       setPhase(PHASE_LABELS[data.phase] || PHASE_LABELS.other);
-      if (data.message) setMessage(data.message, false);
+      if (data.message) {
+        var msg = data.message;
+        if (data.phase === "compress" && poolSize > 1) msg += " " + fmt(L.threadsNote, { n: poolSize });
+        setMessage(msg, false);
+      }
       return;
     }
     if (data.type === "scanned") {
@@ -1140,7 +1145,7 @@
     strengthButtons.forEach(function (b) {
       b.setAttribute("aria-pressed", String(b.getAttribute("data-strength") === strength));
     });
-    applyAudio({ pngOptimize: true, wavToMp3: false, reencodeMp3: false, wavMp3Bitrate: 96, mp3Bitrate: 96 });
+    applyAudio({ pngOptimize: false, wavToMp3: false, reencodeMp3: false, wavMp3Bitrate: 96, mp3Bitrate: 96 });
     saveAudio();
     applyModeUI();
     if (scan) renderLedger();
