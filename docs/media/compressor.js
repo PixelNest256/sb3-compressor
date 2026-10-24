@@ -358,45 +358,26 @@
     }));
   }
 
-  function buildLut(palette) {
-    const lut = new Int16Array(1 << 12);
-    for (let k = 0; k < (1 << 12); k++) {
-      const r = ((k >> 8) & 15) << 4 | 8;
-      const g = ((k >> 4) & 15) << 4 | 8;
-      const b = (k & 15) << 4 | 8;
-      let best = 0, bestD = Infinity;
-      for (let p = 0; p < palette.length; p++) {
-        const c = palette[p];
-        const dr = r - c.r, dg = g - c.g, db = b - c.b;
-        const d = dr * dr + dg * dg + db * db;
-        if (d < bestD) { bestD = d; best = p; if (d === 0) break; }
-      }
-      lut[k] = best;
+  function nearestPaletteIndex(palette, r, g, b) {
+    let best = 0, bestD = Infinity;
+    for (let p = 0; p < palette.length; p++) {
+      const c = palette[p];
+      const dr = r - c.r, dg = g - c.g, db = b - c.b;
+      const d = dr * dr + dg * dg + db * db;
+      if (d < bestD) { bestD = d; best = p; if (d === 0) break; }
     }
-    return lut;
+    return best;
   }
-
-  function buildLut5(palette) {
-    const lut = new Uint8Array(1 << 15);
-    for (let k = 0; k < (1 << 15); k++) {
-      const r = ((k >> 10) & 31) * 8 + 4;
-      const g = ((k >> 5) & 31) * 8 + 4;
-      const b = (k & 31) * 8 + 4;
-      let best = 0, bestD = Infinity;
-      for (let p = 0; p < palette.length; p++) {
-        const c = palette[p];
-        const dr = r - c.r, dg = g - c.g, db = b - c.b;
-        const d = dr * dr + dg * dg + db * db;
-        if (d < bestD) { bestD = d; best = p; if (d === 0) break; }
-      }
-      lut[k] = best;
-    }
-    return lut;
+  function bucketColor4(k) {
+    return [((k >> 8) & 15) << 4 | 8, ((k >> 4) & 15) << 4 | 8, (k & 15) << 4 | 8];
+  }
+  function bucketColor5(k) {
+    return [((k >> 10) & 31) * 8 + 4, ((k >> 5) & 31) * 8 + 4, (k & 31) * 8 + 4];
   }
 
   // Floyd–Steinberg dithering against an opaque palette.
   function ditherIndices(rgba, w, h, palette) {
-    const lut = buildLut5(palette);
+    const lut = new Int16Array(1 << 15).fill(-1);
     const idxs = new Uint8Array(w * h);
     const size = (w + 3) * 3;
     let rowErr = new Float32Array(size);
@@ -413,7 +394,12 @@
         g = g < 0 ? 0 : g > 255 ? 255 : g;
         b = b < 0 ? 0 : b > 255 ? 255 : b;
         const key = (((r | 0) >> 3) << 10) | (((g | 0) >> 3) << 5) | ((b | 0) >> 3);
-        const p = lut[key];
+        let p = lut[key];
+        if (p < 0) {
+          const bc = bucketColor5(key);
+          p = nearestPaletteIndex(palette, bc[0], bc[1], bc[2]);
+          lut[key] = p;
+        }
         idxs[y * w + x] = p;
         const c = palette[p];
         const er = r - c.r, eg = g - c.g, eb = b - c.b;
@@ -473,10 +459,10 @@
         ...e, a: Math.max(128, Math.min(254, e.a))
       }));
       const solidOffset = palette.length;
-      const solidLut = buildLut(solidPal);
+      const solidLut = new Int16Array(1 << 12).fill(-1);
       for (const e of solidPal) palette.push(e);
       const softOffset = palette.length;
-      const softLut = buildLut(softPal);
+      const softLut = new Int16Array(1 << 12).fill(-1);
       for (const e of softPal) palette.push(e);
       if (!palette.length) return null;
 
@@ -485,9 +471,17 @@
         const a = rgba[i + 3];
         const k = ((rgba[i] >> 4) << 8) | ((rgba[i + 1] >> 4) << 4) | (rgba[i + 2] >> 4);
         if (a < 128 && tIndex >= 0) { indices[p] = tIndex; continue; }
-        if (a < 128) { indices[p] = solidOffset + solidLut[k]; continue; }
-        if (a >= 224 || !softPal.length) indices[p] = solidOffset + solidLut[k];
-        else indices[p] = softOffset + softLut[k];
+        const useSoft = a < 224 && softPal.length;
+        const lut = useSoft ? softLut : solidLut;
+        const pal = useSoft ? softPal : solidPal;
+        const offset = useSoft ? softOffset : solidOffset;
+        let idx = lut[k];
+        if (idx < 0) {
+          const bc = bucketColor4(k);
+          idx = nearestPaletteIndex(pal, bc[0], bc[1], bc[2]);
+          lut[k] = idx;
+        }
+        indices[p] = offset + idx;
       }
     }
 
@@ -618,7 +612,7 @@
     const img = ctx.getImageData(0, 0, w, h);
     let out = await encodeIndexedPng(img.data, w, h, params.colors || 128, params.dither);
     if (!out) return null;
-    out = await oxipngOptimise(out, params.oxilevel);
+    if (params.oxilevel !== 0) out = await oxipngOptimise(out, params.oxilevel || 1);
     return {
       bytes: out,
       note: `${w}×${h}, ${params.colors} colours` + (params.dither ? ", dithered" : "")
@@ -1172,15 +1166,15 @@
 
   const PRESETS = {
     light: {
-      jpeg: { quality: 85 }, png: { colors: 256, oxilevel: 2 }, svg: "safe",
+      jpeg: { quality: 85 }, png: { colors: 256, oxilevel: 1 }, svg: "safe",
       wav: { rate: 0, bits: 0, mono: false }, mp3: { tags: true }
     },
     balanced: {
-      jpeg: { quality: 72 }, png: { colors: 128, oxilevel: 3 }, svg: "balanced",
+      jpeg: { quality: 72 }, png: { colors: 128, oxilevel: 1 }, svg: "balanced",
       wav: { rate: 22050, bits: 16, mono: false }, mp3: { tags: true }
     },
     strong: {
-      jpeg: { quality: 55 }, png: { colors: 32, oxilevel: 4 }, svg: "aggressive",
+      jpeg: { quality: 55 }, png: { colors: 32, oxilevel: 2 }, svg: "aggressive",
       wav: { rate: 16000, bits: 16, mono: true }, mp3: { tags: true }
     }
   };
@@ -1190,7 +1184,11 @@
   function autoSetting(asset, preset, opts) {
     const o = opts || {};
     if (asset.kind === "image") {
-      if (asset.ext === "png") return { method: "png", ...preset.png };
+      if (asset.ext === "png") {
+        const png = { ...preset.png };
+        if (o.pngOptimize === false) png.oxilevel = 0;
+        return { method: "png", ...png };
+      }
       if (asset.ext === "jpg" || asset.ext === "jpeg") return { method: "jpeg", ...preset.jpeg };
       return { method: "keep" };
     }
@@ -1206,7 +1204,7 @@
     return { method: "keep" };
   }
 
-  async function compressAsset(data, setting) {
+  async function compressOne(data, setting) {
     const method = setting.method || "keep";
     try {
       if (method === "png") return await compressPng(data, setting);
@@ -1223,10 +1221,25 @@
     return null;
   }
 
-  async function compressBuffer(buffer, filename, options, plan, progress, cancelled) {
+  // Canonical per-asset result, shared by the in-process path and the worker pool.
+  async function compressAssetBytes(data, setting) {
+    const method = (setting && setting.method) || "keep";
+    if (method === "keep") return { changed: false, method };
+    const res = await compressOne(data, setting);
+    if (!res || !res.bytes || res.bytes.length >= data.length) {
+      return { changed: false, method, note: "kept original" };
+    }
+    return {
+      changed: true, bytes: res.bytes, note: res.note || "", method,
+      newExt: res.newExt || null, newFormat: res.newFormat || null, audio: res.audio || null
+    };
+  }
+
+  async function compressBuffer(buffer, filename, options, plan, progress, cancelled, runner) {
     const opts = options || {};
     const report = typeof progress === "function" ? progress : () => {};
     const isCancelled = typeof cancelled === "function" ? cancelled : () => false;
+    const run = typeof runner === "function" ? runner : compressAssetBytes;
 
     report("load", 0.4, "Reading file...");
     const loaded = await loadInput(buffer, filename);
@@ -1245,38 +1258,66 @@
     const results = [];
     let newMediaBytes = 0;
 
-    report("compress", 0, "Compressing media...");
-    for (let i = 0; i < targets.length; i++) {
-      if (isCancelled()) throw new Error("Cancelled");
-      const asset = targets[i];
-      const setting = manual ? (plan[asset.name] || { method: "keep" }) : autoSetting(asset, preset, opts);
-      const res = await compressAsset(asset.entry.data, setting);
+    const settingFor = (asset) =>
+      manual ? (plan[asset.name] || { method: "keep" }) : autoSetting(asset, preset, opts);
 
+    report("compress", 0, "Compressing media...");
+    const total = Math.max(1, targets.length);
+    let done = 0;
+    const prepared = new Array(targets.length);
+
+    if (runner) {
+      // Dispatched in parallel (e.g. across a worker pool).
+      await Promise.all(targets.map(async (asset, i) => {
+        if (isCancelled()) throw new Error("Cancelled");
+        const setting = settingFor(asset);
+        let res = null;
+        try { res = await run(asset.entry.data, setting); } catch (_) { res = null; }
+        prepared[i] = { asset, setting, res };
+        done += 1;
+        report("compress", done / total, `Compressed ${done}/${total}`);
+      }));
+    } else {
+      for (let i = 0; i < targets.length; i++) {
+        if (isCancelled()) throw new Error("Cancelled");
+        const asset = targets[i];
+        const setting = settingFor(asset);
+        let res = null;
+        try { res = await run(asset.entry.data, setting); } catch (_) { res = null; }
+        prepared[i] = { asset, setting, res };
+        done += 1;
+        report("compress", done / total, `Compressed ${done}/${total}`);
+      }
+    }
+
+    // Naming and aggregation (sequential and cheap).
+    for (const item of prepared) {
+      const asset = item.asset;
+      const res = item.res;
+      const setting = item.setting;
       let finalName = asset.name;
-      let changed = false;
-      if (res && res.bytes && res.bytes.length < asset.size) {
-        changed = true;
-        if (res.newExt) {
-          const base = baseNoExt(asset.name);
-          let candidate = base + "." + res.newExt;
-          let n = 1;
-          while (taken.has(candidate) && candidate !== asset.name) { candidate = base + "_" + n + "." + res.newExt; n++; }
-          taken.delete(asset.name);
-          taken.add(candidate);
-          renames.set(asset.name, {
-            newName: candidate,
-            newId: baseNoExt(candidate),
-            newFormat: res.newFormat || res.newExt,
-            audio: res.audio || null
-          });
-          finalName = candidate;
-        }
+      const changed = !!(res && res.changed);
+      if (changed && res.newExt) {
+        const base = baseNoExt(asset.name);
+        let candidate = base + "." + res.newExt;
+        let n = 1;
+        while (taken.has(candidate) && candidate !== asset.name) { candidate = base + "_" + n + "." + res.newExt; n++; }
+        taken.delete(asset.name);
+        taken.add(candidate);
+        renames.set(asset.name, {
+          newName: candidate,
+          newId: baseNoExt(candidate),
+          newFormat: res.newFormat || res.newExt,
+          audio: res.audio || null
+        });
+        finalName = candidate;
+      }
+      if (changed) {
         byName.delete(asset.name);
         byName.set(finalName, { name: finalName, data: res.bytes });
         newMediaBytes += res.bytes.length;
       } else {
         newMediaBytes += asset.size;
-        if (res && !changed) { /* kept */ }
       }
 
       results.push({
@@ -1288,10 +1329,9 @@
         newSize: changed ? res.bytes.length : asset.size,
         changed,
         method: setting.method || "keep",
-        formatChanged: !!(res && res.newExt),
+        formatChanged: !!(changed && res.newExt),
         note: changed ? (res.note || "") : "kept original"
       });
-      report("compress", (i + 1) / Math.max(1, targets.length), `Compressed ${i + 1}/${targets.length}`);
     }
 
     const finalEntries = loaded.entries.map((entry) => {
@@ -1357,6 +1397,7 @@
     scanBuffer,
     scanEntries,
     compressBuffer,
+    compressAssetBytes,
     progressPercent,
     defaultOutputName,
     humanSize,

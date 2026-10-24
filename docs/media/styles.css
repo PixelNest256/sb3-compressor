@@ -1409,3 +1409,6 @@ html[lang="ja"] .footer { font-size: 10px; line-height: 1.7; }
 }
 .opt-inline input[type="checkbox"] { margin-top: 0; }
 .select-inline { width: auto; min-width: 92px; }
+
+/* auto-mode extra options: full-width note inside the flex row */
+.auto-note { flex-basis: 100%; margin: 4px 0 0; }

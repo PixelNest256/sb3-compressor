@@ -58,6 +58,7 @@
       noGain: "no gain — kept",
       keptOriginal: "kept original",
       optionsReset: "Options reset.",
+      threadsNote: "({n} parallel workers)",
       confirmManual: "Choose a project to list its media.",
       glyph: { image: "IMG", vector: "SVG", audio: "SND", wav: "WAV", mp3: "MP3" }
     },
@@ -114,6 +115,7 @@
       noGain: "効果なし — そのまま",
       keptOriginal: "そのまま",
       optionsReset: "設定を初期値に戻しました。",
+      threadsNote: "（並列 {n}）",
       confirmManual: "プロジェクトを選ぶとメディアを一覧できます。",
       glyph: { image: "画像", vector: "SVG", audio: "音声", wav: "WAV", mp3: "MP3" }
     }
@@ -151,6 +153,7 @@
     modeDesc: document.getElementById("modeDesc"),
     strengthWrap: document.getElementById("strengthWrap"),
     autoExtra: document.getElementById("autoExtra"),
+    optPngOptimize: document.getElementById("optPngOptimize"),
     optWavMp3: document.getElementById("optWavMp3"),
     wavMp3Bitrate: document.getElementById("wavMp3Bitrate"),
     optMp3Reenc: document.getElementById("optMp3Reenc"),
@@ -200,6 +203,7 @@
   var strength = "balanced";
   var runId = 0;
   var ledgerOpen = true;
+  var poolSize = 0;
   var deltaEls = new Map();
   var controlEls = new Map();
   var mainThreadCancelled = false;
@@ -236,10 +240,11 @@
   }
 
   function readAudio() {
-    var out = { wavToMp3: false, wavMp3Bitrate: 96, reencodeMp3: false, mp3Bitrate: 96 };
+    var out = { pngOptimize: true, wavToMp3: false, wavMp3Bitrate: 96, reencodeMp3: false, mp3Bitrate: 96 };
     try {
       var s = JSON.parse(localStorage.getItem(AUDIO_KEY) || "null");
       if (s && typeof s === "object") {
+        out.pngOptimize = s.pngOptimize !== false;
         out.wavToMp3 = !!s.wavToMp3;
         out.reencodeMp3 = !!s.reencodeMp3;
         if ([64, 96, 128].indexOf(Number(s.wavMp3Bitrate)) >= 0) out.wavMp3Bitrate = Number(s.wavMp3Bitrate);
@@ -250,6 +255,7 @@
   }
 
   function applyAudio(a) {
+    if (el.optPngOptimize) el.optPngOptimize.checked = a.pngOptimize !== false;
     if (el.optWavMp3) el.optWavMp3.checked = !!a.wavToMp3;
     if (el.optMp3Reenc) el.optMp3Reenc.checked = !!a.reencodeMp3;
     if (el.wavMp3Bitrate) el.wavMp3Bitrate.value = String(a.wavMp3Bitrate);
@@ -258,6 +264,7 @@
 
   function saveAudio() {
     var a = {
+      pngOptimize: !(el.optPngOptimize && !el.optPngOptimize.checked),
       wavToMp3: !!(el.optWavMp3 && el.optWavMp3.checked),
       reencodeMp3: !!(el.optMp3Reenc && el.optMp3Reenc.checked),
       wavMp3Bitrate: el.wavMp3Bitrate ? parseInt(el.wavMp3Bitrate.value, 10) : 96,
@@ -819,6 +826,7 @@
 
   function onWorkerMessage(event) {
     var data = event.data || {};
+    if (data.type === "pool") { poolSize = data.size || 0; return; }
     if (data.type === "progress") {
       if (!running) return;
       setProgress(data.percent || 0);
@@ -879,6 +887,7 @@
 
     var options = { mode: mode, strength: strength };
     if (mode === "auto") {
+      options.pngOptimize = !(el.optPngOptimize && !el.optPngOptimize.checked);
       options.wavToMp3 = !!(el.optWavMp3 && el.optWavMp3.checked);
       options.reencodeMp3 = !!(el.optMp3Reenc && el.optMp3Reenc.checked);
       options.wavMp3Bitrate = el.wavMp3Bitrate ? parseInt(el.wavMp3Bitrate.value, 10) : 96;
@@ -994,7 +1003,9 @@
 
     setProgress(100);
     setPhase(L.complete);
-    setMessage(fmt(L.downloadReady, { name: outputName }), false);
+    var doneMsg = fmt(L.downloadReady, { name: outputName });
+    if (poolSize > 1) doneMsg += " " + fmt(L.threadsNote, { n: poolSize });
+    setMessage(doneMsg, false);
 
     if (staleAfterRun) { staleAfterRun = false; markStale(); }
   }
@@ -1111,7 +1122,7 @@
     });
   });
 
-  [el.optWavMp3, el.wavMp3Bitrate, el.optMp3Reenc, el.mp3Bitrate].forEach(function (control) {
+  [el.optPngOptimize, el.optWavMp3, el.wavMp3Bitrate, el.optMp3Reenc, el.mp3Bitrate].forEach(function (control) {
     if (control) control.addEventListener("change", onAudioChange);
   });
 
@@ -1129,7 +1140,7 @@
     strengthButtons.forEach(function (b) {
       b.setAttribute("aria-pressed", String(b.getAttribute("data-strength") === strength));
     });
-    applyAudio({ wavToMp3: false, reencodeMp3: false, wavMp3Bitrate: 96, mp3Bitrate: 96 });
+    applyAudio({ pngOptimize: true, wavToMp3: false, reencodeMp3: false, wavMp3Bitrate: 96, mp3Bitrate: 96 });
     saveAudio();
     applyModeUI();
     if (scan) renderLedger();

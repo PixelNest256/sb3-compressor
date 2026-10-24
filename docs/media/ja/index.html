@@ -118,7 +118,8 @@
           </div>
 
           <div class="strength" id="autoExtra">
-            <span class="strength-label">音声</span>
+            <span class="strength-label">追加</span>
+            <label class="opt opt-inline"><input type="checkbox" id="optPngOptimize" checked><span>PNG 無劣化圧縮</span></label>
             <label class="opt opt-inline"><input type="checkbox" id="optWavMp3"><span>WAV を MP3 に変換</span></label>
             <select id="wavMp3Bitrate" class="select select-inline" aria-label="WAV→MP3 ビットレート">
               <option value="96" selected>96 kbps</option>
@@ -131,6 +132,7 @@
               <option value="96" selected>96 kbps</option>
               <option value="128">128 kbps</option>
             </select>
+            <p class="options-note auto-note">PNG 無劣化圧縮（OxiPNG）は最も小さくなりますが最も遅い工程です。速さを優先するならオフにしてください。</p>
           </div>
         </div>
 
