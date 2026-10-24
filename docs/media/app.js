@@ -579,12 +579,18 @@
   function updateDeltas() {
     var map = {};
     if (result && result.results) {
-      result.results.forEach(function (r) { map[r.name] = r; });
+      result.results.forEach(function (r) { map[r.origName || r.name] = r; });
     }
     deltaEls.forEach(function (delta, name) {
       var asset = scan.assets.find(function (a) { return a.name === name; });
       if (!asset) return;
       var res = map[name];
+      var row = delta.closest ? delta.closest(".ledger-row") : null;
+      var fileEl = row ? row.querySelector(".file") : null;
+      if (res && fileEl && res.name !== res.origName) {
+        fileEl.textContent = res.origName + " → " + res.name;
+        fileEl.title = fileEl.textContent;
+      }
       var from = humanSize(asset.size);
       if (!res) {
         delta.textContent = from;
