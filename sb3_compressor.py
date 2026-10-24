@@ -16,6 +16,7 @@ Usage:
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import os
@@ -25,8 +26,40 @@ import sys
 import threading
 import traceback
 import zipfile
+from collections import deque
 
 CLOUD_PREFIX = "\u2601"
+
+# Stores/blocks used by the analysis passes below.
+VAR_WRITE_OPS = {"data_setvariableto", "data_changevariableby", "control_for_each"}
+VAR_READ_OPS = {"data_variable"}
+LIST_READ_OPS = {"data_listcontents", "data_itemoflist", "data_itemnumoflist",
+                 "data_lengthoflist", "data_listcontainsitem"}
+LIST_WRITE_OPS = {"data_addtolist", "data_deleteoflist", "data_deletealloflist",
+                  "data_insertatlist", "data_replaceitemoflist"}
+DATA_REPORTER_OPS = {"data_variable", "data_listcontents", "data_itemoflist",
+                     "data_itemnumoflist", "data_lengthoflist",
+                     "data_listcontainsitem"}
+# Top-level blocks with these opcodes are executable stacks. A loose copy on
+# the workspace is unreachable; a top-level reporter is kept as workspace data.
+LOOSE_STACK_OPS = {
+    "event_broadcast", "event_broadcastandwait", "procedures_call",
+    "procedures_prototype", "control_stop", "control_wait",
+    "control_wait_until", "control_create_clone_of", "control_delete_this_clone",
+    "control_stop_other_scripts",
+    "data_setvariableto", "data_changevariableby", "data_showvariable",
+    "data_hidevariable", "data_showlist", "data_hidelist",
+    "data_addtolist", "data_deleteoflist", "data_deletealloflist",
+    "data_insertatlist", "data_replaceitemoflist",
+}
+SENSING_STACK_OPS = {"sensing_askandwait", "sensing_setdragmode",
+                     "sensing_resettimer"}
+EXTRACT_EXCLUDE_OPS = {
+    "procedures_definition", "procedures_prototype",
+    "argument_reporter_string_number", "argument_reporter_boolean",
+    "control_stop",
+}
+
 
 # Built-in properties handled by sensing_of before its variable-name lookup.
 # A variable with one of these names is shadowed on that target type, so the
@@ -106,13 +139,21 @@ MONITOR_DEFAULTS = [
 class Options:
     def __init__(self, strip_defaults: bool = True, shorten_ids: bool = True,
                  click_to_stage: bool = False, remove_unused: bool = True,
-                 compress_procs: bool = True, freq_ids: bool = True):
+                 compress_procs: bool = True, freq_ids: bool = True,
+                 drop_obscured_shadows: bool = True,
+                 remove_unreachable: bool = True,
+                 clear_initial_values: bool = True,
+                 extract_duplicates: bool = True):
         self.strip_defaults = strip_defaults
         self.shorten_ids = shorten_ids
         self.click_to_stage = click_to_stage
         self.remove_unused = remove_unused
         self.compress_procs = compress_procs
         self.freq_ids = freq_ids
+        self.drop_obscured_shadows = drop_obscured_shadows
+        self.remove_unreachable = remove_unreachable
+        self.clear_initial_values = clear_initial_values
+        self.extract_duplicates = extract_duplicates
 
 
 def default_output_path(in_path: str) -> str:
@@ -142,6 +183,15 @@ class Compressor:
             "lists_removed": 0,
             "procs_renamed": 0,
             "args_renamed": 0,
+            "obscured_shadows_removed": 0,
+            "unreachable_blocks_removed": 0,
+            "unreachable_comments_removed": 0,
+            "broadcasts_removed": 0,
+            "procs_removed": 0,
+            "vars_initialized": 0,
+            "lists_initialized": 0,
+            "duplicates_extracted": 0,
+            "dup_blocks_saved": 0,
         }
         self.var_map: dict = {}
         self.list_map: dict = {}
@@ -152,9 +202,27 @@ class Compressor:
         self.var_name_ids: dict = {}
         self.list_name_ids: dict = {}
         self.var_by_target: dict = {}
+        self.var_orig_name: dict = {}
+        self.list_orig_name: dict = {}
+        self.var_cloud_ids: set = set()
         self.stage_name: str | None = None
         self._used_var_ids: set = set()
         self._used_list_ids: set = set()
+        self._dropped_var_ids: set = set()
+        self._dropped_list_ids: set = set()
+        self._read_var_ids: set = set()
+        self._read_list_ids: set = set()
+        self._write_var_ids: set = set()
+        self._write_list_ids: set = set()
+        self._show_var_ids: set = set()
+        self._show_list_ids: set = set()
+        self._visible_var_ids: set = set()
+        self._visible_list_ids: set = set()
+        self._standalone_var_ids: set = set()
+        self._standalone_list_ids: set = set()
+        self._sensed_var_ids: set = set()
+        self._display_var_ids: set = set()
+        self._display_list_ids: set = set()
         self._layer_expect = 0
 
     def run(self, project: dict) -> dict:
@@ -163,10 +231,29 @@ class Compressor:
             raise CompressError("'targets' not found. Please provide a project.json.")
 
         self.progress("collect", 0.0, "Collecting variables, lists, and broadcasts...")
+        if self.options.drop_obscured_shadows:
+            self._drop_obscured_shadows(targets)
+        if self.options.remove_unreachable:
+            self.progress("collect", 1.0, "Removing unreachable blocks and comments...")
+            self._remove_unreachable(project)
+
         self._collect(targets)
-        if self.options.remove_unused:
-            self.progress("collect", 1.0, "Analyzing unused variables and lists...")
-            self._scan_usage(targets, project.get("monitors"))
+        # Usage data is also needed by the initial-value and display analyses.
+        self.progress("collect", 1.0, "Analyzing variables, lists, and monitors...")
+        self._scan_usage(targets, project.get("monitors"))
+        if not self.options.remove_unused:
+            self._used_var_ids = set(self.var_map)
+            self._used_list_ids = set(self.list_map)
+            self._dropped_var_ids = set()
+            self._dropped_list_ids = set()
+        else:
+            self._dropped_var_ids = set(self.var_map) - self._used_var_ids
+            self._dropped_list_ids = set(self.list_map) - self._used_list_ids
+
+        if self.options.clear_initial_values:
+            self.progress("collect", 1.0, "Analyzing initial values...")
+            self._clear_initial_values(targets)
+
         if self.options.shorten_ids:
             self._rename_stores(targets)
         elif self.options.remove_unused:
@@ -205,6 +292,9 @@ class Compressor:
             for vid, ent in (tgt.get("variables") or {}).items():
                 name = ent[0] if isinstance(ent, list) and ent else str(ent)
                 cloud = isinstance(name, str) and name.startswith(CLOUD_PREFIX)
+                self.var_orig_name[vid] = name
+                if cloud:
+                    self.var_cloud_ids.add(vid)
                 base = encode_id(vi := vi + 1)
                 self.var_map[vid] = ("V" + base, (CLOUD_PREFIX + " " if cloud else "") + "V" + base)
                 self.var_by_name.setdefault(name, self.var_map[vid])
@@ -213,6 +303,7 @@ class Compressor:
                     scope.setdefault(name, self.var_map[vid])
             for lid, ent in (tgt.get("lists") or {}).items():
                 name = ent[0] if isinstance(ent, list) and ent else str(ent)
+                self.list_orig_name[lid] = name
                 base = encode_id(li := li + 1)
                 self.list_map[lid] = ("L" + base, "L" + base)
                 self.list_by_name.setdefault(name, self.list_map[lid])
@@ -232,6 +323,17 @@ class Compressor:
     def _scan_usage(self, targets, monitors) -> None:
         used_v: set = set()
         used_l: set = set()
+        read_v: set = set()
+        read_l: set = set()
+        write_v: set = set()
+        write_l: set = set()
+        show_v: set = set()
+        show_l: set = set()
+        visible_v: set = set()
+        visible_l: set = set()
+        standalone_v: set = set()
+        standalone_l: set = set()
+        sensed_v: set = set()
 
         def mark(kind, pid, name):
             used = used_v if kind == "v" else used_l
@@ -253,8 +355,19 @@ class Compressor:
                 return
             if pid in self.var_map:
                 used_v.add(pid)
+                read_v.add(pid)
             elif pid in self.list_map:
                 used_l.add(pid)
+                read_l.add(pid)
+
+        def mark_read(kind, pid, name):
+            table = self.var_map if kind == "v" else self.list_map
+            by_name = self.var_name_ids if kind == "v" else self.list_name_ids
+            out = read_v if kind == "v" else read_l
+            if isinstance(pid, str) and pid in table:
+                out.add(pid)
+            elif name is not None:
+                out.update(by_name.get(name, set()))
 
         def scan_input(node):
             if not isinstance(node, list):
@@ -262,7 +375,9 @@ class Compressor:
             if node and node[0] in (12, 13):
                 name = node[1] if len(node) > 1 else None
                 pid = node[2] if len(node) > 2 else None
-                mark("v" if node[0] == 12 else "l", pid, name)
+                kind = "v" if node[0] == 12 else "l"
+                mark(kind, pid, name)
+                mark_read(kind, pid, name)
                 return
             for item in node:
                 scan_input(item)
@@ -293,33 +408,79 @@ class Compressor:
                     if blk and blk[0] in (12, 13):
                         name = blk[1] if len(blk) > 1 else None
                         pid = blk[2] if len(blk) > 2 else None
-                        mark("v" if blk[0] == 12 else "l", pid, name)
+                        kind = "v" if blk[0] == 12 else "l"
+                        mark(kind, pid, name)
+                        (standalone_v if kind == "v" else standalone_l).update(
+                            [pid] if isinstance(pid, str) and pid in
+                            (self.var_map if kind == "v" else self.list_map)
+                            else (self.var_name_ids if kind == "v"
+                                  else self.list_name_ids).get(name, set()))
                     continue
                 if not isinstance(blk, dict):
                     continue
+                op = blk.get("opcode")
                 fields = blk.get("fields")
                 if isinstance(fields, dict):
                     for k, fv in fields.items():
                         if not isinstance(fv, list) or not fv:
                             continue
                         fid = fv[1] if len(fv) > 1 else None
+                        fname = fv[0]
                         if k == "VARIABLE":
-                            mark("v", fid, fv[0])
+                            mark("v", fid, fname)
+                            ids = ({fid} if isinstance(fid, str) and fid in self.var_map
+                                   else self.var_name_ids.get(fname, set()))
+                            if op in VAR_WRITE_OPS:
+                                write_v.update(ids)
+                            elif op == "data_showvariable":
+                                show_v.update(ids)
+                            elif op in ("data_hidevariable",):
+                                pass
+                            else:
+                                # Includes data_variable and unknown extension
+                                # blocks that use a VARIABLE field.
+                                read_v.update(ids)
                         elif k == "LIST":
-                            mark("l", fid, fv[0])
+                            mark("l", fid, fname)
+                            ids = ({fid} if isinstance(fid, str) and fid in self.list_map
+                                   else self.list_name_ids.get(fname, set()))
+                            if op in LIST_WRITE_OPS:
+                                write_l.update(ids)
+                            elif op == "data_showlist":
+                                show_l.update(ids)
+                            elif op in ("data_hidelist",):
+                                pass
+                            else:
+                                # Includes list reporter blocks and unknown
+                                # extension blocks that use a LIST field.
+                                read_l.update(ids)
                         else:
                             mark_unknown_field(fid)
                     # "sensing_of" reads a variable by name, not by ID.
-                    if blk.get("opcode") == "sensing_of":
+                    if op == "sensing_of":
                         prop = fields.get("PROPERTY")
                         if isinstance(prop, list) and prop and prop[0] is not None:
                             ids = self.var_name_ids.get(prop[0])
                             if ids:
                                 used_v.update(ids)
+                                read_v.update(ids)
+                                sensed_v.update(ids)
                 inputs = blk.get("inputs")
                 if isinstance(inputs, dict):
                     for value in inputs.values():
                         scan_input(value)
+                # A top-level variable/list reporter block is workspace display,
+                # just like the primitive-array form used by most SB3 writers.
+                if blk.get("topLevel") is True and op in ("data_variable", "data_listcontents"):
+                    ids = set()
+                    fv = (fields or {}).get("VARIABLE" if op == "data_variable" else "LIST")
+                    if isinstance(fv, list) and fv:
+                        fid = fv[1] if len(fv) > 1 else None
+                        ids = ({fid} if isinstance(fid, str) and fid in
+                               (self.var_map if op == "data_variable" else self.list_map)
+                               else (self.var_name_ids if op == "data_variable"
+                                     else self.list_name_ids).get(fv[0], set()))
+                    (standalone_v if op == "data_variable" else standalone_l).update(ids)
         for mon in monitors or []:
             if not isinstance(mon, dict):
                 continue
@@ -331,16 +492,317 @@ class Compressor:
             pkey = "VARIABLE" if op == "data_variable" else "LIST"
             pname = (mon.get("params") or {}).get(pkey)
             table = self.var_map if op == "data_variable" else self.list_map
-            used = used_v if op == "data_variable" else used_l
             by_name = self.var_name_ids if op == "data_variable" else self.list_name_ids
+            used = used_v if op == "data_variable" else used_l
             if isinstance(mid, str) and mid in table:
+                ids = {mid}
                 used.add(mid)
             elif pname is not None:
-                ids = by_name.get(pname)
-                if ids:
-                    used.update(ids)
-        self._used_var_ids = used_v
-        self._used_list_ids = used_l
+                ids = set(by_name.get(pname, set()))
+                used.update(ids)
+            else:
+                ids = set()
+            if mon.get("visible", True) is not False:
+                (visible_v if op == "data_variable" else visible_l).update(ids)
+
+        # Feature 1: a store that is not displayed (no visible monitor, no
+        # show block, no standalone reporter) and has neither a writer nor a
+        # reader is dead.  Hidden monitors alone do not keep a store alive.
+        keep_v = used_v & (read_v | write_v | show_v | visible_v | standalone_v)
+        keep_l = used_l & (read_l | write_l | show_l | visible_l | standalone_l)
+        self._used_var_ids = keep_v
+        self._used_list_ids = keep_l
+        self._read_var_ids = read_v
+        self._read_list_ids = read_l
+        self._write_var_ids = write_v
+        self._write_list_ids = write_l
+        self._show_var_ids = show_v
+        self._show_list_ids = show_l
+        self._visible_var_ids = visible_v
+        self._visible_list_ids = visible_l
+        self._standalone_var_ids = standalone_v
+        self._standalone_list_ids = standalone_l
+        self._sensed_var_ids = sensed_v
+        self._display_var_ids = visible_v | show_v | standalone_v
+        self._display_list_ids = visible_l | show_l | standalone_l
+
+    def _drop_obscured_shadows(self, targets) -> None:
+        """Remove the unused shadow value under an input that a block covers.
+
+        Scratch stores such an input as ``[3, block, shadow]``.  The ``shadow``
+        value is serialized data for the editor's default slot, but the VM
+        always uses the covering block, so it is dead weight.
+        """
+        st = self.stats
+        for tgt in targets:
+            if not isinstance(tgt, dict):
+                continue
+            blocks = tgt.get("blocks")
+            if not isinstance(blocks, dict):
+                continue
+            for blk in blocks.values():
+                if not isinstance(blk, dict):
+                    continue
+                inputs = blk.get("inputs")
+                if not isinstance(inputs, dict):
+                    continue
+                for key, value in list(inputs.items()):
+                    if (not isinstance(value, list) or len(value) < 3
+                            or value[0] != 3):
+                        continue
+                    covered = value[1]
+                    if isinstance(covered, str):
+                        if covered not in blocks:
+                            continue
+                    elif isinstance(covered, list):
+                        if not covered or not isinstance(covered[0], int):
+                            continue
+                    else:
+                        continue
+                    inputs[key] = [2, covered]
+                    st["obscured_shadows_removed"] += 1
+
+    def _remove_unreachable(self, project: dict) -> None:
+        """Delete blocks that no script/definition can reach.
+
+        Roots are hats, standalone workspace reporters, and unknown extension
+        top-level blocks.  Custom-block definitions are roots only when a
+        reachable ``procedures_call`` names them.  Broadcast receivers are
+        roots only when a reachable sender uses the same message.
+        """
+        targets = project.get("targets")
+        if not isinstance(targets, list):
+            return
+        st = self.stats
+        blocks_by_ti = []
+        for tgt in targets:
+            blocks = tgt.get("blocks") if isinstance(tgt, dict) else None
+            if not isinstance(blocks, dict):
+                blocks = {}
+            blocks_by_ti.append(blocks)
+
+        defs_by_code: dict = {}
+        receivers = []
+        for ti, blocks in enumerate(blocks_by_ti):
+            for bid, blk in blocks.items():
+                if not isinstance(blk, dict):
+                    continue
+                op = blk.get("opcode")
+                if op == "procedures_definition":
+                    cb = (blk.get("inputs") or {}).get("custom_block")
+                    pid = cb[1] if isinstance(cb, list) and len(cb) > 1 else None
+                    proto = blocks.get(pid) if isinstance(pid, str) else None
+                    mut = (proto or {}).get("mutation") or {}
+                    code = mut.get("proccode")
+                    if isinstance(code, str):
+                        defs_by_code.setdefault((ti, code), []).append(bid)
+                elif op == "event_whenbroadcastreceived":
+                    fv = (blk.get("fields") or {}).get("BROADCAST_OPTION")
+                    if isinstance(fv, list) and fv:
+                        bid_id = fv[1] if len(fv) > 1 else None
+                        receivers.append((ti, bid, bid_id if isinstance(bid_id, str) else None,
+                                          fv[0] if isinstance(fv[0], str) else None))
+
+        def is_top_root(op: str) -> bool:
+            if not isinstance(op, str):
+                return True
+            if op == "event_whenbroadcastreceived":
+                return False
+            if op in ("procedures_definition", "procedures_prototype"):
+                return False
+            if op == "control_start_as_clone" or op.startswith("event_when"):
+                return True
+            if op in DATA_REPORTER_OPS:
+                return True
+            if op.startswith("data_"):
+                return False
+            if op.startswith(("motion_", "looks_", "sound_", "pen_")):
+                return False
+            if op.startswith("control_"):
+                return False
+            if op in SENSING_STACK_OPS:
+                return False
+            if op.startswith("sensing_"):
+                # sensing_of and the reporter blocks are workspace values.
+                return True
+            if op.startswith("operator_") or op.startswith("argument_reporter"):
+                return True
+            if op in LOOSE_STACK_OPS:
+                return False
+            # Unknown extension block: keep it rather than risk deleting a hat.
+            return True
+
+        reachable = [set() for _ in targets]
+        q: deque = deque()
+        sent_ids: set = set()
+        sent_names: set = set()
+
+        def enqueue(ti: int, bid) -> None:
+            if (isinstance(bid, str) and 0 <= ti < len(blocks_by_ti)
+                    and bid in blocks_by_ti[ti] and bid not in reachable[ti]):
+                q.append((ti, bid))
+
+        # Initial roots.
+        for ti, blocks in enumerate(blocks_by_ti):
+            for bid, blk in blocks.items():
+                if isinstance(blk, list):
+                    # Standalone primitive reporter arrays are workspace data.
+                    enqueue(ti, bid)
+                elif isinstance(blk, dict) and blk.get("topLevel") is True:
+                    if is_top_root(blk.get("opcode")):
+                        enqueue(ti, bid)
+
+        def add_broadcast_value(value, ti: int, seen: set | None = None) -> None:
+            if seen is None:
+                seen = set()
+            if isinstance(value, list):
+                if value and value[0] == 11:
+                    if len(value) > 1 and isinstance(value[1], str):
+                        sent_names.add(value[1])
+                    if len(value) > 2 and isinstance(value[2], str):
+                        sent_ids.add(value[2])
+                    return
+                for item in value[1:]:
+                    add_broadcast_value(item, ti, seen)
+            elif isinstance(value, dict):
+                if "opcode" in value or "inputs" in value or "fields" in value:
+                    fv = (value.get("fields") or {}).get("BROADCAST_OPTION")
+                    if isinstance(fv, list) and fv:
+                        if isinstance(fv[0], str):
+                            sent_names.add(fv[0])
+                        if len(fv) > 1 and isinstance(fv[1], str):
+                            sent_ids.add(fv[1])
+                    inputs = value.get("inputs")
+                    if isinstance(inputs, dict):
+                        for item in inputs.values():
+                            add_broadcast_value(item, ti, seen)
+                else:
+                    # A raw inputs/fields mapping.
+                    for item in value.values():
+                        add_broadcast_value(item, ti, seen)
+            elif isinstance(value, str):
+                if value in seen:
+                    return
+                seen.add(value)
+                blk = blocks_by_ti[ti].get(value)
+                if isinstance(blk, dict):
+                    add_broadcast_value(blk, ti, seen)
+
+        def process_queue() -> None:
+            while q:
+                ti, bid = q.popleft()
+                if bid in reachable[ti]:
+                    continue
+                blk = blocks_by_ti[ti].get(bid)
+                if blk is None:
+                    continue
+                reachable[ti].add(bid)
+                if isinstance(blk, list) or not isinstance(blk, dict):
+                    continue
+                op = blk.get("opcode")
+                inputs = blk.get("inputs")
+                if isinstance(inputs, dict):
+                    for value in inputs.values():
+                        if not isinstance(value, list):
+                            continue
+                        for item in value[1:]:
+                            if isinstance(item, str):
+                                enqueue(ti, item)
+                nxt = blk.get("next")
+                if isinstance(nxt, str):
+                    enqueue(ti, nxt)
+                if op == "procedures_definition":
+                    cb = (blk.get("inputs") or {}).get("custom_block")
+                    if isinstance(cb, list) and len(cb) > 1:
+                        enqueue(ti, cb[1])
+                elif op == "procedures_call":
+                    code = ((blk.get("mutation") or {}).get("proccode"))
+                    if isinstance(code, str):
+                        for hat in defs_by_code.get((ti, code), []):
+                            enqueue(ti, hat)
+                if op in ("event_broadcast", "event_broadcastandwait"):
+                    add_broadcast_value(blk.get("inputs"), ti)
+                    add_broadcast_value(blk.get("fields"), ti)
+
+        process_queue()
+        while True:
+            activated = False
+            for ti, bid, bid_id, name in receivers:
+                if bid in reachable[ti]:
+                    continue
+                if ((bid_id is not None and bid_id in sent_ids)
+                        or (name is not None and name in sent_names)):
+                    enqueue(ti, bid)
+                    activated = True
+            if not activated:
+                break
+            process_queue()
+
+        # Prune blocks/comments and message definitions.
+        for ti, tgt in enumerate(targets):
+            if not isinstance(tgt, dict):
+                continue
+            blocks = blocks_by_ti[ti]
+            kept = {bid: blk for bid, blk in blocks.items() if bid in reachable[ti]}
+            st["unreachable_blocks_removed"] += len(blocks) - len(kept)
+            st["procs_removed"] += sum(
+                1 for bid, blk in blocks.items()
+                if bid not in kept and isinstance(blk, dict)
+                and blk.get("opcode") == "procedures_definition")
+            for blk in kept.values():
+                if not isinstance(blk, dict):
+                    continue
+                nxt = blk.get("next")
+                if isinstance(nxt, str) and nxt not in kept:
+                    blk["next"] = None
+                par = blk.get("parent")
+                if isinstance(par, str) and par not in kept:
+                    blk["parent"] = None
+            tgt["blocks"] = kept
+            comments = tgt.get("comments")
+            if isinstance(comments, dict):
+                out = {}
+                for cid, c in comments.items():
+                    if (isinstance(c, dict) and isinstance(c.get("blockId"), str)
+                            and c["blockId"] in kept):
+                        out[cid] = c
+                st["unreachable_comments_removed"] += len(comments) - len(out)
+                tgt["comments"] = out
+
+        # Broadcast definitions that no remaining block sends or receives.
+        used_bc_ids: set = set(sent_ids)
+        used_bc_names: set = set(sent_names)
+        for ti, blocks in enumerate(blocks_by_ti):
+            for bid, blk in blocks.items():
+                if bid not in reachable[ti]:
+                    continue
+                if not isinstance(blk, dict):
+                    continue
+                fv = (blk.get("fields") or {}).get("BROADCAST_OPTION")
+                if isinstance(fv, list) and fv:
+                    if isinstance(fv[0], str):
+                        used_bc_names.add(fv[0])
+                    if len(fv) > 1 and isinstance(fv[1], str):
+                        used_bc_ids.add(fv[1])
+                # Also catch message menus embedded in inputs.
+                add_broadcast_value(blk.get("inputs"), ti)
+        # The helper above intentionally writes sent_*; capture its result too.
+        used_bc_ids |= sent_ids
+        used_bc_names |= sent_names
+        for tgt in targets:
+            if not isinstance(tgt, dict):
+                continue
+            bc = tgt.get("broadcasts")
+            if not isinstance(bc, dict):
+                continue
+            out = {}
+            for bid, ent in bc.items():
+                name = ent[0] if isinstance(ent, list) and ent else ent
+                if ((isinstance(bid, str) and bid in used_bc_ids)
+                        or (isinstance(name, str) and name in used_bc_names)):
+                    out[bid] = ent
+            st["broadcasts_removed"] += len(bc) - len(out)
+            tgt["broadcasts"] = out
 
     def _drop_unused(self, targets) -> None:
         """shorten_ids=False のときの元キーままの除去。"""
@@ -360,6 +822,261 @@ class Compressor:
                 for k in drop:
                     del lists[k]
                 st["lists_removed"] += len(drop)
+
+    def _clear_initial_values(self, targets) -> None:
+        """Blank saved initial values that are provably overwritten first.
+
+        The analysis is deliberately conservative: every top-level script and
+        every custom-block body is treated as an independent entry point.  A
+        store is blanked only if every script that touches it performs a pure
+        initialization (``set`` without reading the old value, or
+        ``delete all of list``) before its first read.
+        """
+        st = self.stats
+        scripts = []
+        for tgt in targets:
+            if not isinstance(tgt, dict):
+                continue
+            blocks = tgt.get("blocks")
+            if not isinstance(blocks, dict):
+                continue
+            for bid, blk in blocks.items():
+                if not isinstance(blk, dict) or blk.get("topLevel") is not True:
+                    continue
+                if blk.get("opcode") == "procedures_definition":
+                    nxt = blk.get("next")
+                    if isinstance(nxt, str) and nxt in blocks:
+                        scripts.append((blocks, nxt))
+                else:
+                    scripts.append((blocks, bid))
+
+        def field_matches(fv, kind: str, sid: str, sname) -> bool:
+            if not isinstance(fv, list) or not fv:
+                return False
+            fid = fv[1] if len(fv) > 1 else None
+            table = self.var_map if kind == "v" else self.list_map
+            if isinstance(fid, str) and fid == sid:
+                return True
+            if ((not isinstance(fid, str)) or fid not in table):
+                return fv[0] == sname
+            return False
+
+        def primitive_matches(p, kind: str, sid: str, sname) -> bool:
+            if not isinstance(p, list) or not p:
+                return False
+            if kind == "v" and p[0] != 12:
+                return False
+            if kind == "l" and p[0] != 13:
+                return False
+            pid = p[2] if len(p) > 2 else None
+            table = self.var_map if kind == "v" else self.list_map
+            if isinstance(pid, str) and pid == sid:
+                return True
+            if ((not isinstance(pid, str)) or pid not in table):
+                return len(p) > 1 and p[1] == sname
+            return False
+
+        def reporter_reads(blocks, blk, kind, sid, sname, seen) -> bool:
+            if not isinstance(blk, dict):
+                return False
+            op = blk.get("opcode")
+            fields = blk.get("fields") or {}
+            if kind == "v":
+                fv = fields.get("VARIABLE")
+                if isinstance(fv, list) and field_matches(fv, "v", sid, sname):
+                    if op != "data_setvariableto":
+                        return True
+                    # A set used as an expression is not a normal reporter, but
+                    # treating its value as a read is the safe direction.
+                    return True
+                if op == "sensing_of":
+                    prop = fields.get("PROPERTY")
+                    if isinstance(prop, list) and prop and prop[0] == sname:
+                        return True
+            else:
+                fv = fields.get("LIST")
+                if isinstance(fv, list) and field_matches(fv, "l", sid, sname):
+                    return True
+            inputs = blk.get("inputs")
+            if isinstance(inputs, dict):
+                for key, value in inputs.items():
+                    if key in ("SUBSTACK", "SUBSTACK2"):
+                        continue
+                    if expr_reads(blocks, value, kind, sid, sname, seen):
+                        return True
+            return False
+
+        def expr_reads(blocks, value, kind, sid, sname, seen) -> bool:
+            if not isinstance(value, list):
+                return False
+            if value and isinstance(value[0], int) and value[0] in (12, 13):
+                return primitive_matches(value, kind, sid, sname)
+            for item in value:
+                if isinstance(item, list):
+                    if expr_reads(blocks, item, kind, sid, sname, seen):
+                        return True
+                elif isinstance(item, str) and item in blocks:
+                    if item in seen:
+                        continue
+                    seen.add(item)
+                    if reporter_reads(blocks, blocks[item], kind, sid, sname, seen):
+                        return True
+            return False
+
+        def block_access(blocks, blk, kind, sid, sname):
+            """Return (reads, writes, pure_initialization)."""
+            if not isinstance(blk, dict):
+                return False, False, False
+            op = blk.get("opcode")
+            fields = blk.get("fields") or {}
+            inputs = blk.get("inputs") or {}
+            input_reads = False
+            for key, value in inputs.items():
+                if key in ("SUBSTACK", "SUBSTACK2"):
+                    continue
+                if expr_reads(blocks, value, kind, sid, sname, set()):
+                    input_reads = True
+                    break
+            reads = input_reads
+            writes = False
+            pure = False
+            fv = fields.get("VARIABLE" if kind == "v" else "LIST")
+            matches = field_matches(fv, kind, sid, sname)
+            if kind == "v":
+                if matches:
+                    if op == "data_setvariableto":
+                        writes = True
+                        # Reading the same variable in VALUE means the old value
+                        # is used, so this is not an initialization.
+                        pure = not input_reads
+                    elif op == "data_changevariableby":
+                        reads = True
+                        writes = True
+                    elif op == "control_for_each":
+                        writes = True
+                    elif op == "data_variable":
+                        reads = True
+                    elif op in ("data_showvariable", "data_hidevariable"):
+                        pass
+                    else:
+                        # Unknown extension block using a VARIABLE field.
+                        reads = True
+                if op == "sensing_of":
+                    prop = fields.get("PROPERTY")
+                    if isinstance(prop, list) and prop and prop[0] == sname:
+                        reads = True
+            else:
+                if matches:
+                    if op == "data_deletealloflist":
+                        writes = True
+                        pure = True
+                    elif op in LIST_WRITE_OPS:
+                        writes = True
+                    elif op in LIST_READ_OPS:
+                        reads = True
+                    elif op in ("data_showlist", "data_hidelist"):
+                        pass
+                    else:
+                        reads = True
+            return reads, writes, pure
+
+        def successors(blocks, blk):
+            out = []
+            nxt = blk.get("next")
+            if isinstance(nxt, str) and nxt in blocks:
+                out.append(nxt)
+            inputs = blk.get("inputs") or {}
+            for key in ("SUBSTACK", "SUBSTACK2"):
+                value = inputs.get(key)
+                if isinstance(value, list):
+                    for item in value[1:]:
+                        if isinstance(item, str) and item in blocks:
+                            out.append(item)
+            return out
+
+        def analyze_script(blocks, start, kind, sid, sname):
+            touched = False
+            has_init = False
+            work = [(start, False)]
+            seen = set()
+            while work:
+                bid, initialized = work.pop()
+                if (bid, initialized) in seen:
+                    continue
+                seen.add((bid, initialized))
+                blk = blocks.get(bid)
+                if not isinstance(blk, dict):
+                    continue
+                reads, writes, pure = block_access(blocks, blk, kind, sid, sname)
+                if reads or writes:
+                    touched = True
+                if reads and not initialized:
+                    return touched, False, has_init
+                if writes:
+                    if pure:
+                        initialized = True
+                        has_init = True
+                for nxt in successors(blocks, blk):
+                    work.append((nxt, initialized))
+            return touched, True, has_init
+
+        def eligible(kind, sid) -> bool:
+            used = self._used_var_ids if kind == "v" else self._used_list_ids
+            if sid not in used:
+                return False
+            if kind == "v":
+                if sid in self.var_cloud_ids:
+                    return False
+                if sid in self._display_var_ids:
+                    return False
+            else:
+                if sid in self._display_list_ids:
+                    return False
+            return True
+
+        def can_clear(kind, sid, sname) -> bool:
+            touched_any = False
+            initialized_any = False
+            for blocks, start in scripts:
+                touched, safe, has_init = analyze_script(
+                    blocks, start, kind, sid, sname)
+                if not touched:
+                    continue
+                touched_any = True
+                if not safe:
+                    return False
+                initialized_any = initialized_any or has_init
+            return touched_any and initialized_any
+
+        for tgt in targets:
+            if not isinstance(tgt, dict):
+                continue
+            variables = tgt.get("variables")
+            if isinstance(variables, dict):
+                for vid, ent in variables.items():
+                    if not isinstance(ent, list) or len(ent) < 2:
+                        continue
+                    if not eligible("v", vid):
+                        continue
+                    if ent[1] == "":
+                        continue
+                    name = ent[0] if ent else self.var_orig_name.get(vid)
+                    if can_clear("v", vid, name):
+                        ent[1] = ""
+                        st["vars_initialized"] += 1
+            lists = tgt.get("lists")
+            if isinstance(lists, dict):
+                for lid, ent in lists.items():
+                    if not isinstance(ent, list) or len(ent) < 2:
+                        continue
+                    if not eligible("l", lid):
+                        continue
+                    if ent[1] == []:
+                        continue
+                    name = ent[0] if ent else self.list_orig_name.get(lid)
+                    if can_clear("l", lid, name):
+                        ent[1] = []
+                        st["lists_initialized"] += 1
 
     def _rename_stores(self, targets) -> None:
         drop_v = self.options.remove_unused
@@ -441,6 +1158,8 @@ class Compressor:
 
         blocks = tgt.get("blocks")
         id_map = {}
+        if isinstance(blocks, dict) and blocks and o.extract_duplicates:
+            self._extract_duplicates(blocks)
         if o.compress_procs and isinstance(blocks, dict) and blocks:
             self._compress_procs(blocks)
         if isinstance(blocks, dict) and o.shorten_ids and blocks:
@@ -453,6 +1172,417 @@ class Compressor:
             for c in tgt["comments"].values():
                 if isinstance(c, dict) and c.get("blockId") in id_map:
                     c["blockId"] = id_map[c["blockId"]]
+
+        # Extraction can remove duplicate blocks; drop comments that were
+        # anchored to those blocks instead of leaving dangling references.
+        final_blocks = tgt.get("blocks")
+        comments = tgt.get("comments")
+        if isinstance(final_blocks, dict) and isinstance(comments, dict):
+            out = {}
+            for cid, c in comments.items():
+                if (isinstance(c, dict) and isinstance(c.get("blockId"), str)
+                        and c["blockId"] in final_blocks):
+                    out[cid] = c
+            tgt["comments"] = out
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _is_hat_opcode(op) -> bool:
+        if not isinstance(op, str):
+            return False
+        return (op == "control_start_as_clone"
+                or op == "procedures_definition"
+                or op.startswith("event_when"))
+
+    def _chain_ids(self, blocks, start, limit):
+        out = []
+        seen = set()
+        cur = start
+        while (isinstance(cur, str) and cur in blocks and cur not in seen
+               and len(out) < limit):
+            blk = blocks.get(cur)
+            if not isinstance(blk, dict):
+                break
+            out.append(cur)
+            seen.add(cur)
+            cur = blk.get("next")
+        return out
+
+    def _collect_subgraph(self, blocks, start, follow_next=True):
+        out = set()
+        stack = [(start, follow_next)]
+        while stack:
+            bid, follow = stack.pop()
+            if not isinstance(bid, str) or bid in out or bid not in blocks:
+                continue
+            out.add(bid)
+            blk = blocks.get(bid)
+            if not isinstance(blk, dict):
+                continue
+            inputs = blk.get("inputs")
+            if isinstance(inputs, dict):
+                for value in inputs.values():
+                    if not isinstance(value, list):
+                        continue
+                    for item in value[1:]:
+                        if isinstance(item, str) and item in blocks:
+                            stack.append((item, True))
+            if follow:
+                nxt = blk.get("next")
+                if isinstance(nxt, str):
+                    stack.append((nxt, True))
+        return out
+
+    def _extract_duplicates(self, blocks: dict) -> None:
+        """Move repeated stacks into argument-free custom blocks when smaller."""
+        st = self.stats
+        # Keep the loop bounded: each successful pass strictly reduces the
+        # target's block count, so this cannot run forever.
+        for _ in range(40):
+            if self.cancelled():
+                raise Cancelled()
+            found = self._find_duplicate_group(blocks)
+            if not found:
+                break
+            starts, length = found
+            before = copy.deepcopy(blocks)
+            old_count = len(before)
+            old_size = len(json.dumps(before, ensure_ascii=False,
+                                      separators=(",", ":")))
+            if not self._apply_duplicate_group(blocks, starts, length):
+                blocks.clear()
+                blocks.update(before)
+                break
+            new_count = len(blocks)
+            new_size = len(json.dumps(blocks, ensure_ascii=False,
+                                      separators=(",", ":")))
+            if new_count >= old_count or new_size >= old_size:
+                blocks.clear()
+                blocks.update(before)
+                break
+            st["duplicates_extracted"] += 1
+            st["dup_blocks_saved"] += old_count - new_count
+
+    def _find_duplicate_group(self, blocks: dict):
+        if not isinstance(blocks, dict) or len(blocks) < 12:
+            return None
+        min_len = 10
+        max_len = 100000
+        canon_cache = {}
+
+        def freeze(value):
+            if isinstance(value, dict):
+                return tuple(sorted((str(k), freeze(v)) for k, v in value.items()))
+            if isinstance(value, list):
+                return tuple(freeze(v) for v in value)
+            return value
+
+        def canon_input(value, stack):
+            if not isinstance(value, list):
+                return ("value", freeze(value))
+            out = []
+            for item in value:
+                if isinstance(item, str) and item in blocks:
+                    out.append(("ref", canon_block(item, True, stack)))
+                elif isinstance(item, list):
+                    out.append(("list", freeze(item)))
+                else:
+                    out.append(("value", item))
+            return tuple(out)
+
+        def canon_block(bid, include_next, stack=frozenset()):
+            key = (bid, include_next)
+            if key in canon_cache:
+                return canon_cache[key]
+            if bid in stack:
+                return ("cycle",)
+            blk = blocks.get(bid)
+            if isinstance(blk, list):
+                value = ("prim", freeze(blk))
+                canon_cache[key] = value
+                return value
+            if not isinstance(blk, dict):
+                value = ("missing",)
+                canon_cache[key] = value
+                return value
+            nstack = stack | {bid}
+            fields = tuple(sorted(
+                (k, freeze(v)) for k, v in (blk.get("fields") or {}).items()))
+            inputs = tuple(sorted(
+                (k, canon_input(v, nstack))
+                for k, v in (blk.get("inputs") or {}).items()))
+            mutation = freeze(blk.get("mutation") or {})
+            value = ("blk", blk.get("opcode"), fields, inputs, mutation,
+                     bool(blk.get("shadow")))
+            if include_next:
+                nxt = blk.get("next")
+                nval = (canon_block(nxt, True, nstack)
+                        if isinstance(nxt, str) and nxt in blocks else None)
+                value = value + (nval,)
+            canon_cache[key] = value
+            return value
+
+        def seq_key(ids):
+            return tuple(canon_block(bid, False) for bid in ids)
+
+        def common_length(a, b):
+            ca = self._chain_ids(blocks, a, max_len)
+            cb = self._chain_ids(blocks, b, max_len)
+            n = 0
+            for x, y in zip(ca, cb):
+                if canon_block(x, False) != canon_block(y, False):
+                    break
+                n += 1
+            return n, ca, cb
+
+        groups = {}
+        for bid, blk in blocks.items():
+            if not isinstance(blk, dict) or blk.get("shadow") is True:
+                continue
+            op = blk.get("opcode")
+            if not isinstance(op, str) or op in EXTRACT_EXCLUDE_OPS:
+                continue
+            if op.startswith("argument_reporter"):
+                continue
+            if self._is_hat_opcode(op):
+                continue
+            ids = self._chain_ids(blocks, bid, min_len)
+            if len(ids) < min_len:
+                continue
+            groups.setdefault(seq_key(ids), []).append(bid)
+
+        best = None  # (score, starts, length)
+        for sig, starts in groups.items():
+            if len(starts) < 2:
+                continue
+            base = starts[0]
+            pair_results = []
+            for other in starts[1:]:
+                length, ca, cb = common_length(base, other)
+                if length < min_len:
+                    continue
+                # The two donor chains must not overlap.
+                if set(ca[:length]) & set(cb[:length]):
+                    continue
+                pair_results.append((length, base, other))
+            # Also try a non-first start as the anchor for repeated patterns.
+            if len(starts) > 2:
+                for i in range(1, min(len(starts), 8)):
+                    for j in range(i + 1, min(len(starts), 12)):
+                        length, ca, cb = common_length(starts[i], starts[j])
+                        if length >= min_len and not (set(ca[:length]) & set(cb[:length])):
+                            pair_results.append((length, starts[i], starts[j]))
+            for length, a, b in pair_results:
+                ids_a = self._chain_ids(blocks, a, length)
+                ids_b = self._chain_ids(blocks, b, length)
+                if len(ids_a) < length or len(ids_b) < length:
+                    continue
+                key = seq_key(ids_a)
+                if key != seq_key(ids_b):
+                    continue
+                # Check the code does not use definition arguments or
+                # scope-sensitive stop blocks.
+                sub_a = self._collect_subgraph(blocks, a, False)
+                # For the chain, collect each block's nested inputs but not the
+                # continuation past the chain.
+                sub_a = set()
+                for cid in ids_a:
+                    sub_a |= self._collect_subgraph(blocks, cid, False)
+                bad = False
+                for cid in sub_a:
+                    cb = blocks.get(cid)
+                    if not isinstance(cb, dict):
+                        continue
+                    op = cb.get("opcode")
+                    if (not isinstance(op, str)
+                            or op in EXTRACT_EXCLUDE_OPS
+                            or op.startswith("argument_reporter")
+                            or self._is_hat_opcode(op)):
+                        bad = True
+                        break
+                if bad:
+                    continue
+
+                # Pick all non-overlapping occurrences of the identical full
+                # sequence.  Different continuations are fine: the call's next
+                # pointer preserves them.
+                selected = []
+                used = set()
+                for cand in starts:
+                    cids = self._chain_ids(blocks, cand, length)
+                    if len(cids) < length or seq_key(cids) != key:
+                        continue
+                    csub = set()
+                    for cid in cids:
+                        csub |= self._collect_subgraph(blocks, cid, False)
+                    if csub & used:
+                        continue
+                    selected.append(cand)
+                    used |= csub
+                if len(selected) < 2:
+                    continue
+                copy_blocks = set()
+                for cid in self._chain_ids(blocks, selected[0], length):
+                    copy_blocks |= self._collect_subgraph(blocks, cid, False)
+                blocks_per_copy = len(copy_blocks)
+                # A definition + prototype + one call per occurrence must be
+                # cheaper than the copies that are removed.
+                savings = ((len(selected) - 1) * blocks_per_copy
+                           - len(selected) - 2)
+                if savings <= 0:
+                    continue
+                score = (savings, length, len(selected))
+                if best is None or score > best[0]:
+                    best = (score, selected, length)
+        if best is None:
+            return None
+        return best[1], best[2]
+
+    def _apply_duplicate_group(self, blocks: dict, starts, length: int) -> bool:
+        if len(starts) < 2:
+            return False
+        donor = starts[0]
+        donor_ids = self._chain_ids(blocks, donor, length)
+        if len(donor_ids) < length:
+            return False
+        infos = []
+        for start in starts:
+            ids = self._chain_ids(blocks, start, length)
+            if len(ids) < length:
+                return False
+            first = blocks.get(start)
+            last = blocks.get(ids[-1])
+            if not isinstance(first, dict) or not isinstance(last, dict):
+                return False
+            prev = first.get("parent")
+            cont = last.get("next")
+            infos.append({
+                "start": start,
+                "ids": ids,
+                "prev": prev if isinstance(prev, str) and prev in blocks else None,
+                "cont": cont if isinstance(cont, str) and cont in blocks else None,
+                "top": first.get("topLevel") is True,
+                "x": first.get("x", 0),
+                "y": first.get("y", 0),
+            })
+
+        # Reserve all new IDs up front.
+        reserved = set(blocks)
+
+        def new_id(prefix: str) -> str:
+            i = 1
+            while f"{prefix}{i}" in reserved:
+                i += 1
+            bid = f"{prefix}{i}"
+            reserved.add(bid)
+            return bid
+
+        existing_codes = set()
+        for blk in blocks.values():
+            if isinstance(blk, dict) and blk.get("opcode") == "procedures_prototype":
+                code = (blk.get("mutation") or {}).get("proccode")
+                if isinstance(code, str):
+                    existing_codes.add(code)
+        n = 1
+        while f"dup{n}" in existing_codes:
+            n += 1
+        proccode = f"dup{n}"
+
+        def_id = new_id("d")
+        proto_id = new_id("p")
+        call_ids = [new_id("c") for _ in infos]
+
+        # Move the first copy into the definition body.
+        body_first = blocks[donor]
+        body_first["parent"] = def_id
+        body_first.pop("topLevel", None)
+        body_first.pop("x", None)
+        body_first.pop("y", None)
+        blocks[donor_ids[-1]]["next"] = None
+
+        blocks[def_id] = {
+            "opcode": "procedures_definition",
+            "next": donor,
+            "parent": None,
+            "inputs": {"custom_block": [1, proto_id]},
+            "fields": {},
+            "shadow": False,
+            "topLevel": True,
+            "x": 0,
+            "y": 1000 + self.stats["duplicates_extracted"] * 100,
+        }
+        blocks[proto_id] = {
+            "opcode": "procedures_prototype",
+            "next": None,
+            "parent": def_id,
+            "inputs": {},
+            "fields": {},
+            "shadow": True,
+            "topLevel": False,
+            "mutation": {
+                "tagName": "mutation",
+                "children": [],
+                "proccode": proccode,
+                "argumentids": "[]",
+                "argumentnames": "[]",
+                "argumentdefaults": "[]",
+                "warp": "false",
+            },
+        }
+
+        for info, call_id in zip(infos, call_ids):
+            start = info["start"]
+            prev = info["prev"]
+            cont = info["cont"]
+            if info is not infos[0]:
+                sub = set()
+                for cid in info["ids"]:
+                    sub |= self._collect_subgraph(blocks, cid, False)
+                for cid in sub:
+                    blocks.pop(cid, None)
+            call = {
+                "opcode": "procedures_call",
+                "next": cont,
+                "parent": prev,
+                "inputs": {},
+                "fields": {},
+                "shadow": False,
+                "topLevel": bool(info["top"] and prev is None),
+                "mutation": {
+                    "tagName": "mutation",
+                    "children": [],
+                    "proccode": proccode,
+                    "argumentids": "[]",
+                    "warp": "false",
+                },
+            }
+            if call["topLevel"]:
+                call["x"] = info["x"]
+                call["y"] = info["y"]
+            blocks[call_id] = call
+            if prev is not None and prev in blocks:
+                parent = blocks[prev]
+                replaced = False
+                if isinstance(parent, dict):
+                    if parent.get("next") == start:
+                        parent["next"] = call_id
+                        replaced = True
+                    inputs = parent.get("inputs")
+                    if not replaced and isinstance(inputs, dict):
+                        for key, value in inputs.items():
+                            if not isinstance(value, list):
+                                continue
+                            for i, item in enumerate(value):
+                                if i > 0 and item == start:
+                                    value[i] = call_id
+                                    replaced = True
+                if not replaced:
+                    call["parent"] = None
+                    call["topLevel"] = True
+            if cont is not None and cont in blocks:
+                blocks[cont]["parent"] = call_id
+
+        return True
 
     def _compress_procs(self, blocks: dict) -> None:
         """定義のproccode・引数名を短い名前へ置き換え、呼び出し側と引数報告ブロックを追従させる。"""
@@ -838,10 +1968,29 @@ class Compressor:
         if not isinstance(mons, list):
             return
         st = self.stats
+        kept_mons = []
         for mon in mons:
             if not isinstance(mon, dict):
+                kept_mons.append(mon)
                 continue
             op = mon.get("opcode")
+            if op in ("data_variable", "data_listcontents"):
+                mid = mon.get("id")
+                if op == "data_variable":
+                    table, byname = self.var_map, self.var_name_ids
+                    dropped = self._dropped_var_ids
+                    pkey = "VARIABLE"
+                else:
+                    table, byname = self.list_map, self.list_name_ids
+                    dropped = self._dropped_list_ids
+                    pkey = "LIST"
+                pname = (mon.get("params") or {}).get(pkey)
+                if isinstance(mid, str) and mid in dropped:
+                    continue
+                if (not isinstance(mid, str) or mid not in table) and pname is not None:
+                    ids = byname.get(pname, set())
+                    if ids and ids <= dropped:
+                        continue
             if self.options.shorten_ids and op in ("data_variable", "data_listcontents"):
                 table = self.var_map if op == "data_variable" else self.list_map
                 byname = self.var_by_name if op == "data_variable" else self.list_by_name
@@ -862,7 +2011,9 @@ class Compressor:
                     if key in mon and loose_eq(mon[key], dflt):
                         del mon[key]
                         st["fields_removed"] += 1
-        if not mons:
+            kept_mons.append(mon)
+        project["monitors"] = kept_mons
+        if not kept_mons:
             project.pop("monitors", None)
 
     def _process_root(self, project: dict) -> None:
@@ -1036,6 +2187,13 @@ def run_cli(argv) -> int:
           f"unused vars/lists removed {st['vars_removed'] + st['lists_removed']} / "
           f"custom blocks shortened {st['procs_renamed']} / "
           f"monitors updated {st['monitors_updated']}")
+    print(f"         unreachable blocks {st['unreachable_blocks_removed']} / "
+          f"comments {st['unreachable_comments_removed']} / "
+          f"broadcasts {st['broadcasts_removed']} / "
+          f"obscured defaults {st['obscured_shadows_removed']}")
+    print(f"         initial values cleared {st['vars_initialized'] + st['lists_initialized']} / "
+          f"duplicate groups {st['duplicates_extracted']} "
+          f"({st['dup_blocks_saved']} blocks saved)")
     return 0
 
 
@@ -1053,8 +2211,8 @@ def run_gui() -> int:
         def __init__(self, root: tk.Tk):
             self.root = root
             root.title("SB3 Compressor")
-            root.geometry("760x680")
-            root.minsize(640, 560)
+            root.geometry("760x780")
+            root.minsize(640, 620)
 
             self.q: queue.Queue = queue.Queue()
             self.worker = None
@@ -1068,6 +2226,10 @@ def run_gui() -> int:
             self.opt_unused = tk.BooleanVar(value=True)
             self.opt_procs = tk.BooleanVar(value=True)
             self.opt_freq = tk.BooleanVar(value=True)
+            self.opt_shadows = tk.BooleanVar(value=True)
+            self.opt_unreachable = tk.BooleanVar(value=True)
+            self.opt_init = tk.BooleanVar(value=True)
+            self.opt_dup = tk.BooleanVar(value=True)
             self.pct_var = tk.DoubleVar(value=0.0)
             self.phase_var = tk.StringVar(value="Idle")
 
@@ -1115,6 +2277,18 @@ def run_gui() -> int:
             ttk.Checkbutton(fopt, variable=self.opt_click,
                             text="Rewrite sprite clicks as stage clicks (changes behavior)"
                             ).grid(row=5, column=0, sticky="w")
+            ttk.Checkbutton(fopt, variable=self.opt_shadows,
+                            text="Remove input defaults hidden under reporter blocks"
+                            ).grid(row=6, column=0, sticky="w")
+            ttk.Checkbutton(fopt, variable=self.opt_unreachable,
+                            text="Remove unreachable blocks, comments, definitions, and messages"
+                            ).grid(row=7, column=0, sticky="w")
+            ttk.Checkbutton(fopt, variable=self.opt_init,
+                            text="Blank initial values that are always overwritten first"
+                            ).grid(row=8, column=0, sticky="w")
+            ttk.Checkbutton(fopt, variable=self.opt_dup,
+                            text="Extract repeated code (10+ blocks) into custom blocks"
+                            ).grid(row=9, column=0, sticky="w")
 
             btns = ttk.Frame(outer)
             btns.pack(fill="x", pady=8)
@@ -1206,7 +2380,11 @@ def run_gui() -> int:
                            click_to_stage=self.opt_click.get(),
                            remove_unused=self.opt_unused.get(),
                            compress_procs=self.opt_procs.get(),
-                           freq_ids=self.opt_freq.get())
+                           freq_ids=self.opt_freq.get(),
+                           drop_obscured_shadows=self.opt_shadows.get(),
+                           remove_unreachable=self.opt_unreachable.get(),
+                           clear_initial_values=self.opt_init.get(),
+                           extract_duplicates=self.opt_dup.get())
             self.payload = None
             self.cancel_flag.clear()
             self.set_running(True)
@@ -1288,7 +2466,14 @@ def run_gui() -> int:
                 f"Lists {st['lists_renamed']} / Broadcasts {st['broadcasts_renamed']}\n"
                 f"Defaults removed {st['fields_removed']} / Unused vars/lists removed "
                 f"{st['vars_removed'] + st['lists_removed']} / "
-                f"Custom blocks shortened {st['procs_renamed']}")
+                f"Custom blocks shortened {st['procs_renamed']}\n"
+                f"Unreachable blocks {st['unreachable_blocks_removed']} / "
+                f"comments {st['unreachable_comments_removed']} / "
+                f"messages {st['broadcasts_removed']} / "
+                f"hidden defaults {st['obscured_shadows_removed']}\n"
+                f"Initial values cleared {st['vars_initialized'] + st['lists_initialized']} / "
+                f"duplicate groups {st['duplicates_extracted']} "
+                f"({st['dup_blocks_saved']} blocks saved)")
             self.log_line(f"Done: {s['ratio']:.1f}% smaller "
                           f"({human_size(s['orig_json_size'])} → "
                           f"{human_size(s['new_json_size'])})")
