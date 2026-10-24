@@ -45,11 +45,11 @@
   <main>
     <section class="intro">
       <p class="eyebrow">Scratch / TurboWarp のプロジェクトファイル向け</p>
-      <h1>プロジェクトも、<br>メディアも、まるごと。</h1>
+      <h1>圧縮するも、<br>中身を見るも。</h1>
       <p class="lead">
-        <code>.sb3</code> 向けの独立した3つのツールです。1つは動作を変えずに
-        <code>project.json</code> の論理を削り、1つはコスチュームと音を再圧縮し、
-        1つはその両方を1回の実行で行います。すべてブラウザ内で完結し、
+        <code>.sb3</code> 向けの4つのツールです。3つは圧縮（
+        <code>project.json</code> の論理／コスチュームと音／その両方を一度に）、
+        1つは容量とブロックの内訳を表示します。すべてブラウザ内で完結し、
         アップロードもインストールも要りません。
       </p>
     </section>
@@ -118,6 +118,28 @@
         <div class="actions">
           <a class="btn" href="../full/ja/">ツールを開く</a>
           <a class="btn-quiet" href="../full/">English</a>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="card-analyzer">
+        <div class="card-head">
+          <span class="card-glyph" aria-hidden="true">123</span>
+          <h2 id="card-analyzer">Analyzer</h2>
+        </div>
+        <p class="card-sub">解析 · 容量とブロック</p>
+        <p class="body">
+          容量の行き先を表示します。<code>project.json</code> のサイズ、
+          スプライトごとのメディア容量とアセット数、スプライトごとのブロック数、
+          そして Scratch の上限に対する警告。
+        </p>
+        <dl class="spec">
+          <div><dt>読み込み</dt><dd>.sb3</dd></div>
+          <div><dt>書き出し</dt><dd>なし</dd></div>
+          <div><dt>送信</dt><dd>なし</dd></div>
+        </dl>
+        <div class="actions">
+          <a class="btn" href="../analyzer/ja/">ツールを開く</a>
+          <a class="btn-quiet" href="../analyzer/">English</a>
         </div>
       </section>
     </div>

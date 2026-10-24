@@ -129,12 +129,13 @@ Progress and summary messages are written in English.
 
 ### Browser version (no install)
 
-`docs/` hosts three self-contained browser builds. The project compressor
+`docs/` hosts four self-contained browser tools. The project compressor
 lives in `docs/sb3/`; the media compressor (costumes and sounds) lives in
 `docs/media/`; the full compressor (both passes at once) lives in
-`docs/full/`; and `docs/index.html` is a landing page that links them, with a Japanese version at
-`docs/ja/index.html` (`/ja/`); `docs/home.css` styles both. Each tool has no
-build step and no server-side code: `index.html`, `styles.css`,
+`docs/full/`; and the analyzer (size and block report) lives in
+`docs/analyzer/`. `docs/index.html` is a landing page that links them, with a
+Japanese version at `docs/ja/index.html` (`/ja/`); `docs/home.css` styles both.
+Each tool has no build step and no server-side code: `index.html`, `styles.css`,
 `app.js`, `worker.js`, `compressor.js`, a vendored copy of JSZip, and a
 `ja/index.html` Japanese page.
 
@@ -175,8 +176,8 @@ Then open <http://localhost:8000/>.
 To publish with GitHub Pages, push the repository and set
 **Settings → Pages → Deploy from a branch → `main` / `docs`**. The tools are
 then served at `https://<user>.github.io/sb3-compressor/` (landing, Japanese at
-`.../ja/`), `.../sb3/`, `.../media/`, and `.../full/`. `docs/.nojekyll` keeps
-Jekyll out of the way.
+`.../ja/`), `.../sb3/`, `.../media/`, `.../full/`, and `.../analyzer/`.
+`docs/.nojekyll` keeps Jekyll out of the way.
 
 The browser engine is a direct port of `sb3_compressor.py`. On the optional
 `test.sb3` fixture it produces the same `project.json` size and the same
@@ -229,6 +230,20 @@ tools' engines) and the same `vendor/` codecs, and exposes the project
 compressor's option groups alongside the media strength and extras. Output is
 written as `*_full.sb3`. Use `docs/sb3/` or `docs/media/` instead when you want
 to tune one pass at a time.
+
+### Analyzer
+
+`docs/analyzer/` reads a project and reports where it spends its bytes, without
+changing anything:
+
+- the **project.json size**, with a bar against Scratch's 5 MB limit;
+- **media bytes and asset counts per sprite** (share of bytes and share of
+  count), with a warning for any asset over the 10 MB per-asset limit, plus a
+  largest-assets table and a list of files no costume or sound references;
+- **block counts per sprite** with each sprite's share of the total.
+
+It needs only JSZip (no WASM codecs, no worker) and writes nothing. Output is a
+report, not a file.
 
 ### Tests
 

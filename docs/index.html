@@ -45,12 +45,12 @@
   <main>
     <section class="intro">
       <p class="eyebrow">Browser tools for Scratch and TurboWarp files</p>
-      <h1>Compress the project,<br>the media, or both.</h1>
+      <h1>Compress them,<br>or see what's inside.</h1>
       <p class="lead">
-        Three independent tools for <code>.sb3</code> files. One slims the
-        <code>project.json</code> logic without changing behavior; one
-        re-encodes costumes and sounds; and one does both in a single pass. All
-        run entirely in your browser — no upload, no install.
+        Four tools for <code>.sb3</code> files. Three compress — the
+        <code>project.json</code> logic, the costumes and sounds, or both at
+        once — and one reports where the bytes and blocks go. All run entirely
+        in your browser — no upload, no install.
       </p>
     </section>
 
@@ -118,6 +118,28 @@
         <div class="actions">
           <a class="btn" href="full/">Open the tool</a>
           <a class="btn-quiet" href="full/ja/">日本語</a>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="card-analyzer">
+        <div class="card-head">
+          <span class="card-glyph" aria-hidden="true">123</span>
+          <h2 id="card-analyzer">Analyzer</h2>
+        </div>
+        <p class="card-sub">Inspect · bytes &amp; blocks</p>
+        <p class="body">
+          Reports where a project spends its bytes: the <code>project.json</code>
+          size, the media bytes and asset counts per sprite, and the block count
+          per sprite — with warnings against Scratch's upload limits.
+        </p>
+        <dl class="spec">
+          <div><dt>Reads</dt><dd>.sb3</dd></div>
+          <div><dt>Writes</dt><dd>nothing</dd></div>
+          <div><dt>Upload</dt><dd>none</dd></div>
+        </dl>
+        <div class="actions">
+          <a class="btn" href="analyzer/">Open the tool</a>
+          <a class="btn-quiet" href="analyzer/ja/">日本語</a>
         </div>
       </section>
     </div>

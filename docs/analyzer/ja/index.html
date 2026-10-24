@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SB3 Analyzer — Scratch プロジェクトの容量とブロックを解析</title>
+<meta name="description" content="Scratch / TurboWarp の .sb3 がどこに容量を使っているかを表示します。project.json のサイズ、スプライトごとのメディア容量とアセット数、スプライトごとのブロック数、Scratch の上限に対する警告。アップロードはありません。">
+<meta name="theme-color" content="#e7e8e1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23171a16'/%3E%3Crect x='6' y='17' width='5' height='9' fill='%23e7e8e1'/%3E%3Crect x='13' y='9' width='5' height='17' fill='%23e14b12'/%3E%3Crect x='20' y='21' width='5' height='5' fill='%23565a4e'/%3E%3C/svg%3E">
+<script>
+(function () {
+  var saved = null;
+  try { saved = localStorage.getItem("sb3-analyzer-theme-v1"); } catch (e) {}
+  var dark = saved ? saved === "dark"
+    : !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  var meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", dark ? "#15180f" : "#e7e8e1");
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+JP:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">解析ツールへ移動</a>
+
+<div class="sheet">
+  <header class="masthead">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-name">SB3 Analyzer</span>
+      <span class="brand-sub">プロジェクト解析</span>
+    </div>
+    <div class="masthead-links">
+      <a class="tool-link" href="../../ja/">ホーム</a>
+      <a class="tool-link" href="../../sb3/ja/">SB3</a>
+      <a class="tool-link" href="../../media/ja/">メディア</a>
+      <a class="tool-link" href="../../full/ja/">まとめて</a>
+      <a class="lang-link" href="../" hreflang="en" lang="en">English</a>
+      <div class="theme-switch" role="group" aria-label="配色">
+        <button type="button" data-theme-set="light">ライト</button>
+        <button type="button" data-theme-set="dark">ダーク</button>
+      </div>
+      <span class="local-flag"><span class="dot" aria-hidden="true"></span>端末内のみ</span>
+    </div>
+  </header>
+
+  <main id="main" class="analyzer-layout">
+    <div class="analyzer-main">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">Scratch / TurboWarp のプロジェクトファイル向け</p>
+        <h1 id="page-title">容量の行き先を見る。</h1>
+        <p class="lead">
+          <code>.sb3</code> を読み込み、<code>project.json</code> のサイズ、
+          スプライトごとのメディア容量、スプライトごとのブロック数を表示します。
+          Scratch のアップロード上限に対する警告付き。アップロードはありません。
+        </p>
+      </section>
+
+      <section class="panel input-panel" aria-labelledby="input-title">
+        <div class="panel-head">
+          <h2 id="input-title">入力</h2>
+          <span class="head-rule" aria-hidden="true"></span>
+          <span class="panel-meta">.sb3</span>
+        </div>
+        <div id="dropzone" class="dropzone" role="button" tabindex="0"
+             aria-describedby="drop-hint" aria-label=".sb3 を選択">
+          <span class="corner tl" aria-hidden="true"></span>
+          <span class="corner tr" aria-hidden="true"></span>
+          <span class="corner bl" aria-hidden="true"></span>
+          <span class="corner br" aria-hidden="true"></span>
+          <span class="drop-glyph" aria-hidden="true">.sb3</span>
+          <p class="drop-title">プロジェクトをドロップ</p>
+          <p class="drop-hint" id="drop-hint">または <span class="linkish">ファイルを選択</span></p>
+        </div>
+        <input type="file" id="fileInput" class="visually-hidden" accept=".sb3,application/zip">
+        <div id="fileRow" class="file-row" hidden>
+          <div class="file-meta">
+            <span class="file-name" id="fileName">project.sb3</span>
+            <span class="file-size" id="fileSize">—</span>
+          </div>
+          <button type="button" id="clearBtn" class="text-btn">削除</button>
+        </div>
+        <p class="privacy">ファイルはこのタブ内で読み込まれます。サーバーには送信されません。</p>
+      </section>
+
+      <div id="report" hidden>
+        <section class="report" aria-labelledby="warn-title">
+          <div class="panel-head">
+            <h2 id="warn-title">警告</h2>
+            <span class="head-rule" aria-hidden="true"></span>
+            <span class="panel-meta">Scratch の上限</span>
+          </div>
+          <div class="warn-box" id="warnBox"></div>
+        </section>
+
+        <section class="report" aria-labelledby="media-title">
+          <div class="panel-head">
+            <h2 id="media-title">スプライト別メディア</h2>
+            <span class="head-rule" aria-hidden="true"></span>
+            <span class="panel-meta">容量 · 個数</span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="dtbl">
+              <thead>
+                <tr>
+                  <th scope="col">スプライト</th>
+                  <th scope="col" class="num">アセット数</th>
+                  <th scope="col" class="num">容量</th>
+                  <th scope="col">容量の割合</th>
+                  <th scope="col">個数の割合</th>
+                </tr>
+              </thead>
+              <tbody id="mediaTbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="report" aria-labelledby="blocks-title">
+          <div class="panel-head">
+            <h2 id="blocks-title">スプライト別ブロック数</h2>
+            <span class="head-rule" aria-hidden="true"></span>
+            <span class="panel-meta">個数</span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="dtbl">
+              <thead>
+                <tr>
+                  <th scope="col">スプライト</th>
+                  <th scope="col" class="num">ブロック数</th>
+                  <th scope="col">割合</th>
+                </tr>
+              </thead>
+              <tbody id="blocksTbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="report" aria-labelledby="assets-title">
+          <div class="panel-head">
+            <h2 id="assets-title">大きいアセット</h2>
+            <span class="head-rule" aria-hidden="true"></span>
+            <span class="panel-meta">上位12件</span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="dtbl">
+              <thead>
+                <tr>
+                  <th scope="col">ファイル</th>
+                  <th scope="col">所有</th>
+                  <th scope="col" class="num">種類</th>
+                  <th scope="col" class="num">サイズ</th>
+                </tr>
+              </thead>
+              <tbody id="assetsTbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="report" id="unusedSection" hidden aria-labelledby="unused-title">
+          <div class="panel-head">
+            <h2 id="unused-title">未使用ファイル</h2>
+            <span class="head-rule" aria-hidden="true"></span>
+          </div>
+          <p class="limit-note" id="unusedNote"></p>
+          <div class="filelist" id="unusedBox"></div>
+        </section>
+      </div>
+    </div>
+
+    <aside class="analyzer-side" aria-label="解析サマリー">
+      <section class="readout" aria-labelledby="readout-title">
+        <div class="readout-head">
+          <h2 id="readout-title">解析結果</h2>
+          <span class="stamp" aria-hidden="true">端末内<br>のみ</span>
+        </div>
+
+        <div class="size-pair">
+          <div class="size-row"><span class="label">project.json</span><span class="value" id="jsonValue">—</span></div>
+          <div class="size-row"><span class="label">メディア</span><span class="value" id="mediaValue">—</span></div>
+          <div class="size-row"><span class="label">アセット数</span><span class="value" id="assetValue">—</span></div>
+          <div class="size-row"><span class="label">ブロック数</span><span class="value" id="blockValue">—</span></div>
+          <div class="size-row"><span class="label">.sb3 ファイル</span><span class="value" id="fileValue">—</span></div>
+        </div>
+
+        <div class="limit">
+          <div class="limit-head">
+            <span class="label">project.json の上限</span>
+            <span class="tag" id="jsonTag" hidden>上限超過</span>
+          </div>
+          <div class="bar-track"><div class="bar-removed" id="jsonLimitFill"></div></div>
+          <div class="limit-text" id="jsonLimitText">—</div>
+        </div>
+
+        <div class="status-row">
+          <span class="label">状態</span>
+          <span class="status-value" id="statusValue">—</span>
+          <span class="tag" id="statusTag" hidden></span>
+        </div>
+
+        <p class="limit-note">Scratch の上限: project.json は 5 MB、アセット1件あたり 10 MB。</p>
+        <p class="run-message" id="phaseLabel" aria-live="polite">準備完了</p>
+
+        <div class="readout-foot">
+          <span>エンジン: SB3 Analyzer</span>
+          <span>v1.0</span>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <p><strong>SB3 Analyzer</strong> · すべてブラウザ内で処理され、ファイルは送信されません。</p>
+    <p class="footer-links">
+      <a href="https://github.com/PixelNest256/sb3-compressor" rel="noopener">GitHub リポジトリ ↗</a>
+      <span aria-hidden="true">/</span>
+      <span>MIT ライセンス</span>
+    </p>
+  </footer>
+</div>
+
+<script src="../jszip.min.js"></script>
+<script src="../analyzer.js"></script>
+<script src="../app.js"></script>
+</body>
+</html>
+

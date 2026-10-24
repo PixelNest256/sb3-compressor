@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SB3 Analyzer — inspect a Scratch project's size and blocks</title>
+<meta name="description" content="See where a Scratch or TurboWarp .sb3 spends its bytes: project.json size, media bytes and asset counts per sprite, block counts per sprite, and warnings against Scratch's upload limits. Nothing is uploaded.">
+<meta name="theme-color" content="#e7e8e1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23171a16'/%3E%3Crect x='6' y='17' width='5' height='9' fill='%23e7e8e1'/%3E%3Crect x='13' y='9' width='5' height='17' fill='%23e14b12'/%3E%3Crect x='20' y='21' width='5' height='5' fill='%23565a4e'/%3E%3C/svg%3E">
+<script>
+(function () {
+  var saved = null;
+  try { saved = localStorage.getItem("sb3-analyzer-theme-v1"); } catch (e) {}
+  var dark = saved ? saved === "dark"
+    : !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  var meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", dark ? "#15180f" : "#e7e8e1");
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to the analyzer</a>
+
+<div class="sheet">
+  <header class="masthead">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-name">SB3 Analyzer</span>
+      <span class="brand-sub">project inspector</span>
+    </div>
+    <div class="masthead-links">
+      <a class="tool-link" href="../">Home</a>
+      <a class="tool-link" href="../sb3/">SB3</a>
+      <a class="tool-link" href="../media/">Media</a>
+      <a class="tool-link" href="../full/">Full</a>
+      <a class="lang-link" href="ja/" hreflang="ja" lang="ja">日本語</a>
+      <div class="theme-switch" role="group" aria-label="Color theme">
+        <button type="button" data-theme-set="light">Light</button>
+        <button type="button" data-theme-set="dark">Dark</button>
+      </div>
+      <span class="local-flag"><span class="dot" aria-hidden="true"></span>Local only</span>
+    </div>
+  </header>
+
+  <main id="main" class="analyzer-layout">
+    <div class="analyzer-main">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">For Scratch and TurboWarp project files</p>
+        <h1 id="page-title">See where the bytes go.</h1>
+        <p class="lead">
+          Reads an <code>.sb3</code> and reports its <code>project.json</code>
+          size, how much media each sprite uses, and how many blocks each sprite
+          has — with warnings against Scratch's upload limits. Nothing is
+          uploaded.
+        </p>
+      </section>
+
+      <section class="panel input-panel" aria-labelledby="input-title">
+        <div class="panel-head">
+          <h2 id="input-title">Input</h2>
+          <span class="head-rule" aria-hidden="true"></span>
+          <span class="panel-meta">.sb3</span>
+        </div>
+        <div id="dropzone" class="dropzone" role="button" tabindex="0"
+             aria-describedby="drop-hint" aria-label="Choose an .sb3 file">
+          <span class="corner tl" aria-hidden="true"></span>
+          <span class="corner tr" aria-hidden="true"></span>
+          <span class="corner bl" aria-hidden="true"></span>
+          <span class="corner br" aria-hidden="true"></span>
+          <span class="drop-glyph" aria-hidden="true">.sb3</span>
+          <p class="drop-title">Drop a project here</p>
+          <p class="drop-hint" id="drop-hint">or <span class="linkish">choose a file</span> from your computer</p>
+        </div>
+        <input type="file" id="fileInput" class="visually-hidden" accept=".sb3,application/zip">
+        <div id="fileRow" class="file-row" hidden>
+          <div class="file-meta">
+            <span class="file-name" id="fileName">project.sb3</span>
+            <span class="file-size" id="fileSize">—</span>
+          </div>
+          <button type="button" id="clearBtn" class="text-btn">Remove</button>
+        </div>
+        <p class="privacy">The file is read in this tab. Nothing is sent to a server.</p>
+      </section>
+
+      <div id="report" hidden>
+        <section class="report" aria-labelledby="warn-title">
+          <div class="panel-head">
+            <h2 id="warn-title">Warnings</h2>
+            <span class="head-rule" aria-hidden="true"></span>
+            <span class="panel-meta">Scratch limits</span>
+          </div>
+          <div class="warn-box" id="warnBox"></div>
+        </section>
+
+        <section class="report" aria-labelledby="media-title">
+          <div class="panel-head">
+            <h2 id="media-title">Media by sprite</h2>
+            <span class="head-rule" aria-hidden="true"></span>
+            <span class="panel-meta">bytes · count</span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="dtbl">
+              <thead>
+                <tr>
+                  <th scope="col">Sprite</th>
+                  <th scope="col" class="num">Assets</th>
+                  <th scope="col" class="num">Bytes</th>
+                  <th scope="col">Bytes share</th>
+                  <th scope="col">Count share</th>
+                </tr>
+              </thead>
+              <tbody id="mediaTbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="report" aria-labelledby="blocks-title">
+          <div class="panel-head">
+            <h2 id="blocks-title">Blocks by sprite</h2>
+            <span class="head-rule" aria-hidden="true"></span>
+            <span class="panel-meta">count</span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="dtbl">
+              <thead>
+                <tr>
+                  <th scope="col">Sprite</th>
+                  <th scope="col" class="num">Blocks</th>
+                  <th scope="col">Share</th>
+                </tr>
+              </thead>
+              <tbody id="blocksTbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="report" aria-labelledby="assets-title">
+          <div class="panel-head">
+            <h2 id="assets-title">Largest assets</h2>
+            <span class="head-rule" aria-hidden="true"></span>
+            <span class="panel-meta">top 12</span>
+          </div>
+          <div class="tbl-scroll">
+            <table class="dtbl">
+              <thead>
+                <tr>
+                  <th scope="col">File</th>
+                  <th scope="col">Owner</th>
+                  <th scope="col" class="num">Kind</th>
+                  <th scope="col" class="num">Size</th>
+                </tr>
+              </thead>
+              <tbody id="assetsTbody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="report" id="unusedSection" hidden aria-labelledby="unused-title">
+          <div class="panel-head">
+            <h2 id="unused-title">Unused files</h2>
+            <span class="head-rule" aria-hidden="true"></span>
+          </div>
+          <p class="limit-note" id="unusedNote"></p>
+          <div class="filelist" id="unusedBox"></div>
+        </section>
+      </div>
+    </div>
+
+    <aside class="analyzer-side" aria-label="Analysis summary">
+      <section class="readout" aria-labelledby="readout-title">
+        <div class="readout-head">
+          <h2 id="readout-title">Analysis</h2>
+          <span class="stamp" aria-hidden="true">Local<br>only</span>
+        </div>
+
+        <div class="size-pair">
+          <div class="size-row"><span class="label">project.json</span><span class="value" id="jsonValue">—</span></div>
+          <div class="size-row"><span class="label">media bytes</span><span class="value" id="mediaValue">—</span></div>
+          <div class="size-row"><span class="label">assets</span><span class="value" id="assetValue">—</span></div>
+          <div class="size-row"><span class="label">blocks</span><span class="value" id="blockValue">—</span></div>
+          <div class="size-row"><span class="label">.sb3 file</span><span class="value" id="fileValue">—</span></div>
+        </div>
+
+        <div class="limit">
+          <div class="limit-head">
+            <span class="label">project.json limit</span>
+            <span class="tag" id="jsonTag" hidden>over limit</span>
+          </div>
+          <div class="bar-track"><div class="bar-removed" id="jsonLimitFill"></div></div>
+          <div class="limit-text" id="jsonLimitText">—</div>
+        </div>
+
+        <div class="status-row">
+          <span class="label">status</span>
+          <span class="status-value" id="statusValue">—</span>
+          <span class="tag" id="statusTag" hidden></span>
+        </div>
+
+        <p class="limit-note">Scratch upload limits: project.json 5 MB, each asset 10 MB.</p>
+        <p class="run-message" id="phaseLabel" aria-live="polite">Ready</p>
+
+        <div class="readout-foot">
+          <span>Engine: SB3 Analyzer</span>
+          <span>v1.0</span>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <p><strong>SB3 Analyzer</strong> · everything runs in your browser; files are never uploaded.</p>
+    <p class="footer-links">
+      <a href="https://github.com/PixelNest256/sb3-compressor" rel="noopener">GitHub repository ↗</a>
+      <span aria-hidden="true">/</span>
+      <span>MIT License</span>
+    </p>
+  </footer>
+</div>
+
+<script src="jszip.min.js"></script>
+<script src="analyzer.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
+
