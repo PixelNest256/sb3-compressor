@@ -132,8 +132,9 @@ Progress and summary messages are written in English.
 `docs/` hosts three self-contained browser builds. The project compressor
 lives in `docs/sb3/`; the media compressor (costumes and sounds) lives in
 `docs/media/`; the full compressor (both passes at once) lives in
-`docs/full/`; and `docs/index.html` is a landing page that links them. Each
-tool has no build step and no server-side code: `index.html`, `styles.css`,
+`docs/full/`; and `docs/index.html` is a landing page that links them, with a Japanese version at
+`docs/ja/index.html` (`/ja/`); `docs/home.css` styles both. Each tool has no
+build step and no server-side code: `index.html`, `styles.css`,
 `app.js`, `worker.js`, `compressor.js`, a vendored copy of JSZip, and a
 `ja/index.html` Japanese page.
 
@@ -173,9 +174,9 @@ Then open <http://localhost:8000/>.
 
 To publish with GitHub Pages, push the repository and set
 **Settings → Pages → Deploy from a branch → `main` / `docs`**. The tools are
-then served at `https://<user>.github.io/sb3-compressor/` (landing),
-`.../sb3/`, `.../media/`, and `.../full/`. `docs/.nojekyll` keeps Jekyll out of
-the way.
+then served at `https://<user>.github.io/sb3-compressor/` (landing, Japanese at
+`.../ja/`), `.../sb3/`, `.../media/`, and `.../full/`. `docs/.nojekyll` keeps
+Jekyll out of the way.
 
 The browser engine is a direct port of `sb3_compressor.py`. On the optional
 `test.sb3` fixture it produces the same `project.json` size and the same

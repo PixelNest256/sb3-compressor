@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SB3 Tools — Scratch プロジェクト向けブラウザツール</title>
+<meta name="description" content="Scratch / TurboWarp の .sb3 向けブラウザツール。project.json の圧縮、コスチューム・音のメディア圧縮、その両方を一度に行う統合版の3つ。アップロードはありません。">
+<meta name="theme-color" content="#e7e8e1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23171a16'/%3E%3Crect x='6' y='7' width='20' height='6' fill='%23e7e8e1'/%3E%3Crect x='6' y='16' width='11' height='9' fill='%23e14b12'/%3E%3Crect x='19' y='16' width='7' height='9' fill='%23565a4e'/%3E%3C/svg%3E">
+<script>
+(function () {
+  var saved = null;
+  try { saved = localStorage.getItem("sb3-tools-theme-v1"); } catch (e) {}
+  var dark = saved
+    ? saved === "dark"
+    : !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  var meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", dark ? "#15180f" : "#e7e8e1");
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans+JP:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="../home.css">
+</head>
+<body>
+<div class="sheet">
+  <header class="masthead">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-name">SB3 Tools</span>
+      <span class="brand-sub">ブラウザ内ツール</span>
+    </div>
+    <div class="masthead-links">
+      <a class="lang-link" href="../" hreflang="en" lang="en">English</a>
+      <div class="theme-switch" role="group" aria-label="配色">
+        <button type="button" data-theme-set="light">ライト</button>
+        <button type="button" data-theme-set="dark">ダーク</button>
+      </div>
+      <span class="local-flag"><span class="dot" aria-hidden="true"></span>端末内のみ</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="intro">
+      <p class="eyebrow">Scratch / TurboWarp のプロジェクトファイル向け</p>
+      <h1>プロジェクトも、<br>メディアも、まるごと。</h1>
+      <p class="lead">
+        <code>.sb3</code> 向けの独立した3つのツールです。1つは動作を変えずに
+        <code>project.json</code> の論理を削り、1つはコスチュームと音を再圧縮し、
+        1つはその両方を1回の実行で行います。すべてブラウザ内で完結し、
+        アップロードもインストールも要りません。
+      </p>
+    </section>
+
+    <div class="cards">
+      <section class="card" aria-labelledby="card-sb3">
+        <div class="card-head">
+          <span class="card-glyph" aria-hidden="true">.sb3</span>
+          <h2 id="card-sb3">SB3 Compressor</h2>
+        </div>
+        <p class="card-sub">プロジェクトデータ · 動作はそのまま</p>
+        <p class="body">
+          ID を短縮し、未使用の変数や到達しないコードを削り、繰り返すブロックを
+          共有してから <code>project.json</code> を最小化します。コスチュームと音は
+          そのままコピーされます。
+        </p>
+        <dl class="spec">
+          <div><dt>読み込み</dt><dd>.sb3 / project.json</dd></div>
+          <div><dt>書き出し</dt><dd>*_compressed.sb3</dd></div>
+          <div><dt>送信</dt><dd>なし</dd></div>
+        </dl>
+        <div class="actions">
+          <a class="btn" href="../sb3/ja/">ツールを開く</a>
+          <a class="btn-quiet" href="../sb3/">English</a>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="card-media">
+        <div class="card-head">
+          <span class="card-glyph" aria-hidden="true">AV</span>
+          <h2 id="card-media">Media Compressor</h2>
+        </div>
+        <p class="card-sub">コスチューム＆サウンド · 不可逆</p>
+        <p class="body">
+          PNG をパレットに減色し、JPEG を再エンコードし、SVG を整理し、WAV を
+          再サンプリングし、MP3 のタグを除去します。<code>project.json</code> は
+          バイト単位で同一のままです。
+        </p>
+        <dl class="spec">
+          <div><dt>読み込み</dt><dd>.sb3</dd></div>
+          <div><dt>書き出し</dt><dd>*_media.sb3</dd></div>
+          <div><dt>送信</dt><dd>なし</dd></div>
+        </dl>
+        <div class="actions">
+          <a class="btn" href="../media/ja/">ツールを開く</a>
+          <a class="btn-quiet" href="../media/">English</a>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="card-full">
+        <div class="card-head">
+          <span class="card-glyph" aria-hidden="true">A-Z</span>
+          <h2 id="card-full">Full Compressor</h2>
+        </div>
+        <p class="card-sub">プロジェクト＋メディア · 1回で</p>
+        <p class="body">
+          同じファイルに両方を実行します。まずコスチュームと音を圧縮し、続いて
+          <code>project.json</code> を小さくし、最後に1回だけ梱包し直します。
+          まるごと小さくする最短ルートです。
+        </p>
+        <dl class="spec">
+          <div><dt>読み込み</dt><dd>.sb3</dd></div>
+          <div><dt>書き出し</dt><dd>*_full.sb3</dd></div>
+          <div><dt>送信</dt><dd>なし</dd></div>
+        </dl>
+        <div class="actions">
+          <a class="btn" href="../full/ja/">ツールを開く</a>
+          <a class="btn-quiet" href="../full/">English</a>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <p><strong>SB3 Tools</strong> · すべてブラウザ内で処理され、ファイルは送信されません。</p>
+    <p class="footer-links">
+      <a href="https://github.com/PixelNest256/sb3-compressor" rel="noopener">GitHub リポジトリ ↗</a>
+      <span aria-hidden="true">/</span>
+      <span>MIT ライセンス</span>
+    </p>
+  </footer>
+</div>
+
+<script>
+(function () {
+  var buttons = Array.prototype.slice.call(document.querySelectorAll("button[data-theme-set]"));
+  var KEY = "sb3-tools-theme-v1";
+  function current() {
+    return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  }
+  function apply(theme, persist) {
+    var dark = theme === "dark";
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", dark ? "#15180f" : "#e7e8e1");
+    buttons.forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-theme-set") === (dark ? "dark" : "light")));
+    });
+    if (persist) { try { localStorage.setItem(KEY, dark ? "dark" : "light"); } catch (e) {} }
+  }
+  buttons.forEach(function (b) {
+    b.addEventListener("click", function () { apply(b.getAttribute("data-theme-set"), true); });
+  });
+  apply(current(), false);
+})();
+</script>
+</body>
+</html>
