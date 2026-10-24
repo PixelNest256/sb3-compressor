@@ -1097,7 +1097,7 @@ html[lang="ja"] .footer { font-size: 10px; line-height: 1.7; }
 @media (max-width: 560px) {
   .masthead { gap: 12px; }
   .masthead-links { gap: 8px; }
-  .masthead-links > .source-link { display: none; }
+  .masthead-links > .source-link, .masthead-links > .tool-link { display: none; }
   .brand-name { font-size: 21px; }
 }
 

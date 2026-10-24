@@ -74,7 +74,9 @@ Typical savings depend on the project, but JSON-heavy projects often shrink
 substantially with zero visual or behavioral difference in the editor.
 
 There are two ways to run it: the Python tool below, or the browser version in
-`docs/`, which needs no install and can be published with GitHub Pages.
+`docs/sb3/`, which needs no install and can be published with GitHub Pages. A
+companion tool, the **media compressor** in `docs/media/`, re-encodes the
+costumes and sounds inside a project instead of its logic.
 
 ## Requirements
 
@@ -127,9 +129,12 @@ Progress and summary messages are written in English.
 
 ### Browser version (no install)
 
-`docs/` contains a self-contained browser build of the same compressor. It has
-no build step and no server-side code: `index.html`, `styles.css`, `app.js`,
-`worker.js`, `compressor.js`, and a vendored copy of JSZip.
+`docs/` hosts two self-contained browser builds. The project compressor lives
+in `docs/sb3/`; the media compressor (costumes and sounds) lives in
+`docs/media/`; and `docs/index.html` is a landing page that links both. Each
+tool has no build step and no server-side code: `index.html`, `styles.css`,
+`app.js`, `worker.js`, `compressor.js`, a vendored copy of JSZip, and a
+`ja/index.html` Japanese page.
 
 1. Open the page.
 2. Drop an `.sb3` file (or a raw `project.json`) onto it, or choose one.
@@ -141,7 +146,7 @@ Python/Pyodide in the browser. Cancelling a run terminates the worker; the
 in-tab fallback cannot be interrupted once compression starts.
 
 Serving the page over HTTP is recommended, because the Web Worker keeps the
-interface responsive while a project is compressed. Opening `docs/index.html`
+interface responsive while a project is compressed. Opening `docs/sb3/index.html`
 directly from disk also works: browsers block workers on `file://` URLs, so the
 page detects that and compresses in the main tab instead. The tab will pause
 until the readout appears.
@@ -150,9 +155,11 @@ The interface follows the operating system's light or dark preference by
 default. The **Light / Dark** switch in the header overrides it, and the choice
 is remembered in `localStorage`.
 
-The English page lives at `docs/index.html` and the Japanese page at
-`docs/ja/index.html` (served at `/ja/`). The header switch moves between them;
-both use the same stylesheet and compressor engine.
+The compressor's English page lives at `docs/sb3/index.html` (served at
+`/sb3/`) and its Japanese page at `docs/sb3/ja/index.html` (`/sb3/ja/`). The
+media compressor mirrors this at `docs/media/` (`/media/`) and
+`docs/media/ja/` (`/media/ja/`). Each tool's header switch moves between its own
+two languages, and the tool links move between the two tools.
 
 To preview locally:
 
@@ -163,15 +170,36 @@ python -m http.server 8000 --directory docs
 Then open <http://localhost:8000/>.
 
 To publish with GitHub Pages, push the repository and set
-**Settings → Pages → Deploy from a branch → `main` / `docs`**. The page is then
-served at `https://<user>.github.io/sb3-compressor/`. `docs/.nojekyll` keeps
-Jekyll from touching the directory.
+**Settings → Pages → Deploy from a branch → `main` / `docs`**. The tools are
+then served at `https://<user>.github.io/sb3-compressor/` (landing),
+`.../sb3/`, and `.../media/`. `docs/.nojekyll` keeps Jekyll from touching the
+directory.
 
 The browser engine is a direct port of `sb3_compressor.py`. On the optional
 `test.sb3` fixture it produces the same `project.json` size and the same
 statistics as the Python build; the two outputs are deep-equal apart from JSON
 key order. Zip entries other than `project.json` are copied verbatim, so
 costumes and sounds are unchanged.
+
+### Media compressor
+
+`docs/media/` is a second, independent tool for the same kind of file. Instead
+of the project logic, it re-compresses the media:
+
+- **PNG** costumes are reduced to a palette and rewritten as indexed PNGs
+  (transparent pixels stay transparent).
+- **JPEG** costumes are re-encoded at a chosen quality. Pixel dimensions never
+  change, so rotation centres stay valid.
+- **SVG** costumes lose comments, metadata, editor namespaces, and excess
+  coordinate digits.
+- **WAV** sounds are resampled and can be downmixed to mono (pure JS).
+- **MP3** sounds only have their ID3 tags stripped.
+
+It works in an *auto* mode (Light / Balanced / Strong presets) or a *manual*
+mode that lists every asset and lets you pick a method for each one. File names
+and formats never change and `project.json` is copied through byte-for-byte, so
+the project opens unchanged. This compression is lossy and irreversible — keep
+a copy of the original file.
 
 ### Tests
 

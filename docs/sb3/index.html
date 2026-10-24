@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SB3 Compressor — make a Scratch project smaller</title>
+<meta name="description" content="Shrink a Scratch or TurboWarp .sb3 project in your browser. Removes unused data and repeated code without changing how the project behaves. Nothing is uploaded.">
+<meta name="theme-color" content="#e7e8e1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23171a16'/%3E%3Crect x='6' y='7' width='20' height='6' fill='%23e7e8e1'/%3E%3Crect x='6' y='16' width='11' height='9' fill='%23e14b12'/%3E%3Crect x='19' y='16' width='7' height='9' fill='%23565a4e'/%3E%3C/svg%3E">
+<script>
+/* Apply the saved theme before the stylesheet paints. */
+(function () {
+  var saved = null;
+  try { saved = localStorage.getItem("sb3-compressor-theme-v1"); } catch (e) {}
+  var dark = saved
+    ? saved === "dark"
+    : !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+  var meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", dark ? "#15180f" : "#e7e8e1");
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to the compressor</a>
+
+<div class="sheet">
+  <header class="masthead">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-name">SB3 Compressor</span>
+      <span class="brand-sub">browser file utility</span>
+    </div>
+    <div class="masthead-links">
+      <a class="tool-link" href="../">Home</a>
+      <a class="tool-link" href="../media/">Media&nbsp;compressor</a>
+      <a class="lang-link" href="ja/" hreflang="ja" lang="ja">日本語</a>
+      <div class="theme-switch" role="group" aria-label="Color theme">
+        <button type="button" data-theme-set="light">Light</button>
+        <button type="button" data-theme-set="dark">Dark</button>
+      </div>
+      <span class="local-flag"><span class="dot" aria-hidden="true"></span>Local only</span>
+      <a class="source-link" href="https://github.com/PixelNest256/sb3-compressor" rel="noopener">Source&nbsp;↗</a>
+    </div>
+  </header>
+
+  <main id="main" class="layout">
+    <div class="main-col">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">For Scratch and TurboWarp project files</p>
+        <h1 id="page-title">Smaller .sb3.<br>Same project.</h1>
+        <p class="lead">
+          Removes unused data, shortens IDs, and shares repeated code inside
+          an <code>.sb3</code> file. The result opens and runs with the same
+          behavior — no upload, no Python, no install.
+        </p>
+        <dl class="spec">
+          <div><dt>Reads</dt><dd>.sb3 / project.json</dd></div>
+          <div><dt>Writes</dt><dd>*_compressed.sb3</dd></div>
+          <div><dt>Upload</dt><dd>none</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel input-panel" aria-labelledby="input-title">
+        <div class="panel-head">
+          <h2 id="input-title">Input</h2>
+          <span class="head-rule" aria-hidden="true"></span>
+          <span class="panel-meta">.sb3 / .json</span>
+        </div>
+
+        <div id="dropzone" class="dropzone" role="button" tabindex="0"
+             aria-describedby="drop-hint" aria-label="Choose an .sb3 or project.json file">
+          <span class="corner tl" aria-hidden="true"></span>
+          <span class="corner tr" aria-hidden="true"></span>
+          <span class="corner bl" aria-hidden="true"></span>
+          <span class="corner br" aria-hidden="true"></span>
+          <span class="drop-glyph" aria-hidden="true">.sb3</span>
+          <p class="drop-title">Drop a project here</p>
+          <p class="drop-hint" id="drop-hint">or <span class="linkish">choose a file</span> from your computer</p>
+        </div>
+        <input type="file" id="fileInput" class="visually-hidden" accept=".sb3,.json,application/json,application/zip">
+
+        <div id="fileRow" class="file-row" hidden>
+          <div class="file-meta">
+            <span class="file-name" id="fileName">project.sb3</span>
+            <span class="file-size" id="fileSize">—</span>
+          </div>
+          <button type="button" id="clearBtn" class="text-btn">Remove</button>
+        </div>
+
+        <p class="privacy">The file is read in this tab. Nothing is sent to a server.</p>
+      </section>
+
+      <section class="panel options-panel" aria-labelledby="options-title">
+        <div class="panel-head">
+          <h2 id="options-title">Options</h2>
+          <span class="head-rule" aria-hidden="true"></span>
+          <button type="button" id="resetOptions" class="text-btn">Reset to defaults</button>
+        </div>
+
+        <div class="opt-grid">
+          <fieldset class="opt-group">
+            <legend>Reclaim space</legend>
+            <label class="opt"><input type="checkbox" checked data-opt="stripDefaults"><span>Remove values Scratch restores</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="removeUnused"><span>Remove unused variables and lists</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="clearInitialValues"><span>Clear overwritten starting values</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="dropObscuredShadows"><span>Drop hidden input defaults</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="removeUnreachable"><span>Remove code that never runs</span></label>
+            <label class="opt"><input type="checkbox" data-opt="stripComments"><span>Remove all comments (their text is lost)</span></label>
+          </fieldset>
+
+          <fieldset class="opt-group">
+            <legend>Restructure</legend>
+            <label class="opt"><input type="checkbox" checked data-opt="extractDuplicates"><span>Extract repeated code</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="nearDuplicates"><span>Merge near-identical code</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="loopDuplicates"><span>Replace repeated runs with loops</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="inlineSingleCall"><span>Inline blocks used only once</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="removeNoops"><span>Remove do-nothing blocks</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="simplifyIfElse"><span>Turn empty if-else into if</span></label>
+            <label class="opt"><input type="checkbox" data-opt="compactWorkspace"><span>Re-flow the workspace layout</span></label>
+          </fieldset>
+
+          <fieldset class="opt-group">
+            <legend>Rename &amp; fold</legend>
+            <label class="opt"><input type="checkbox" checked data-opt="shortenIds"><span>Shorten internal IDs</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="freqIds"><span>Give frequent blocks shorter IDs</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="compressProcs"><span>Shorten custom block names</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="foldConstants"><span>Calculate constant math</span></label>
+            <label class="opt"><input type="checkbox" checked data-opt="propagateConstants"><span>Replace constant variables with values</span></label>
+          </fieldset>
+        </div>
+
+        <label class="opt opt-warn">
+          <input type="checkbox" data-opt="clickToStage">
+          <span>Rewrite sprite clicks as stage clicks</span>
+          <span class="tag">changes behavior</span>
+        </label>
+
+        <p class="options-note">
+          All options except the last one are designed to preserve behavior.
+          Near-duplicate sharing only passes literal inputs as arguments;
+          dropdown fields are never converted.
+        </p>
+      </section>
+
+      <section class="notes" aria-labelledby="notes-title">
+        <div class="panel-head">
+          <h2 id="notes-title">Notes</h2>
+          <span class="head-rule" aria-hidden="true"></span>
+        </div>
+        <details>
+          <summary>What gets changed, and what does not</summary>
+          <div class="notes-body">
+            <p>
+              The compressor works only on the project data inside the zip.
+              Costumes and sounds are copied through unchanged.
+            </p>
+            <ul>
+              <li>Block IDs, variable names, list names, and broadcast names become short generated IDs.</li>
+              <li>Unused stores, unreachable scripts, and default-valued fields are removed.</li>
+              <li>Repeated or near-repeated code becomes a new custom block when that makes the file smaller.</li>
+              <li>Original names cannot be recovered from the output. Keep a copy of the original file.</li>
+            </ul>
+            <p class="fine">
+              The output keeps the <code>parent: null</code> and end-of-stack
+              <code>next: null</code> markers that the Scratch VM interpreter
+              relies on.
+            </p>
+          </div>
+        </details>
+        <details>
+          <summary>Proof of behavior</summary>
+          <div class="notes-body">
+            <p>
+              The engine is the same compressor as the Python CLI in this
+              repository. Its test suite checks structure, determinism, fuzzed
+              projects, and differential playback against TurboWarp's
+              <code>scratch-vm</code> with the compiler both on and off.
+            </p>
+          </div>
+        </details>
+      </section>
+    </div>
+
+    <aside class="side-col" aria-label="Compression result">
+      <section class="readout" aria-labelledby="readout-title">
+        <div class="readout-head">
+          <h2 id="readout-title">Compression readout</h2>
+          <span class="stamp" aria-hidden="true">Local<br>only</span>
+        </div>
+
+        <div class="size-pair">
+          <div class="size-row">
+            <span class="label">project.json</span>
+            <span class="value" id="jsonSizes">—</span>
+          </div>
+          <div class="size-row">
+            <span class="label">.sb3 file</span>
+            <span class="value" id="fileSizes">—</span>
+          </div>
+        </div>
+
+        <div class="gauge" id="gauge" role="img" aria-label="No compression measured yet">
+          <div class="gauge-track">
+            <div class="gauge-kept" id="gaugeKept"><span id="gaugeKeptLabel">—</span></div>
+            <div class="gauge-removed" id="gaugeRemoved"></div>
+          </div>
+          <div class="gauge-scale" aria-hidden="true">
+            <span>0</span><span>25</span><span>50</span><span>75</span><span>100%</span>
+          </div>
+          <div class="gauge-legend">
+            <span><i class="key kept" aria-hidden="true"></i>Kept</span>
+            <span><i class="key removed" aria-hidden="true"></i>Removed</span>
+          </div>
+        </div>
+
+        <div class="figure">
+          <span class="figure-num" id="figureNum">0.0</span><span class="figure-unit">%</span>
+          <span class="figure-label" id="figureLabel">smaller project.json</span>
+        </div>
+
+        <div class="run-state">
+          <div class="run-line">
+            <span id="phaseLabel" aria-live="polite">Ready</span>
+            <span id="percentLabel">0%</span>
+          </div>
+          <div class="progress" id="progress" role="progressbar"
+               aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <span id="progressBar"></span>
+          </div>
+          <p class="run-message" id="runMessage">Choose a project to begin.</p>
+        </div>
+
+        <div class="readout-actions">
+          <button type="button" id="downloadBtn" class="btn-primary" disabled>Download .sb3</button>
+          <div class="action-row">
+            <button type="button" id="runAgainBtn" class="btn-quiet" hidden>Run again</button>
+            <button type="button" id="cancelBtn" class="btn-quiet" hidden>Cancel</button>
+          </div>
+        </div>
+
+        <div id="stats" class="stats" hidden>
+          <div class="stats-key" id="statsKey"></div>
+          <details class="stats-all">
+            <summary>All counts</summary>
+            <dl id="statsAll"></dl>
+          </details>
+        </div>
+
+        <div class="readout-foot">
+          <span>Engine: SB3 Compressor</span>
+          <span>v1.0</span>
+        </div>
+      </section>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <p>
+      <strong>SB3 Compressor</strong> · browser edition. Everything runs in
+      this tab; files are never uploaded.
+    </p>
+    <p class="footer-links">
+      <a href="https://github.com/PixelNest256/sb3-compressor" rel="noopener">GitHub repository ↗</a>
+      <span aria-hidden="true">/</span>
+      <a href="https://github.com/PixelNest256/sb3-compressor/blob/main/sb3_compressor.py" rel="noopener">Python CLI</a>
+      <span aria-hidden="true">/</span>
+      <span>MIT License</span>
+    </p>
+  </footer>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

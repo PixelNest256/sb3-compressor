@@ -3,15 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SB3 Compressor — make a Scratch project smaller</title>
-<meta name="description" content="Shrink a Scratch or TurboWarp .sb3 project in your browser. Removes unused data and repeated code without changing how the project behaves. Nothing is uploaded.">
+<title>SB3 Tools — browser utilities for Scratch projects</title>
+<meta name="description" content="Two browser tools for Scratch and TurboWarp .sb3 files: a project.json compressor and a costume/sound media compressor. Nothing is uploaded.">
 <meta name="theme-color" content="#e7e8e1">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23171a16'/%3E%3Crect x='6' y='7' width='20' height='6' fill='%23e7e8e1'/%3E%3Crect x='6' y='16' width='11' height='9' fill='%23e14b12'/%3E%3Crect x='19' y='16' width='7' height='9' fill='%23565a4e'/%3E%3C/svg%3E">
 <script>
-/* Apply the saved theme before the stylesheet paints. */
 (function () {
   var saved = null;
-  try { saved = localStorage.getItem("sb3-compressor-theme-v1"); } catch (e) {}
+  try { saved = localStorage.getItem("sb3-tools-theme-v1"); } catch (e) {}
   var dark = saved
     ? saved === "dark"
     : !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
@@ -23,255 +22,302 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="styles.css">
+<style>
+:root {
+  color-scheme: light;
+  --paper: #e7e8e1;
+  --paper-3: #d0d2c6;
+  --ink: #171a16;
+  --ink-soft: #4e5348;
+  --rule: #a9ac9f;
+  --rule-light: #c3c5b8;
+  --signal: #e14b12;
+  --signal-dark: #b93a09;
+  --panel: #1c201b;
+  --panel-rule: #3c4237;
+  --panel-ink: #edece1;
+  --panel-soft: #9aa092;
+  --lead: #33372e;
+  --code-bg: rgba(23, 26, 22, 0.07);
+  --on-signal: #171a16;
+  --display: "Barlow Condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
+  --body: "Barlow", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #15180f;
+  --paper-3: #0a0c07;
+  --ink: #e8e9dd;
+  --ink-soft: #a4aa99;
+  --rule: #4b5241;
+  --rule-light: #353b2d;
+  --signal: #ff6430;
+  --signal-dark: #ff9a70;
+  --panel: #20251b;
+  --panel-rule: #414837;
+  --panel-ink: #edece1;
+  --panel-soft: #9fa695;
+  --lead: #c9cdbf;
+  --code-bg: rgba(232, 233, 221, 0.09);
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: inherit; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+a:hover { color: var(--signal-dark); }
+button { font: inherit; color: inherit; }
+::selection { background: var(--signal); color: var(--on-signal); }
+:focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; }
+code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  padding: 1px 4px;
+  background: var(--code-bg);
+}
+
+.sheet { width: 100%; max-width: 1120px; margin: 0 auto; padding: 0 32px 44px; }
+
+.masthead {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 20px; padding: 18px 0 13px; border-bottom: 2px solid var(--ink);
+}
+.brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.brand-mark { display: inline-flex; flex-direction: column; gap: 2px; width: 20px; flex: none; }
+.brand-mark i { display: block; height: 4px; background: var(--ink); }
+.brand-mark i:nth-child(1) { width: 20px; }
+.brand-mark i:nth-child(2) { width: 13px; background: var(--signal); }
+.brand-mark i:nth-child(3) { width: 8px; }
+.brand-name {
+  font-family: var(--display); font-weight: 600; font-size: 23px; line-height: 1;
+  letter-spacing: 0.045em; text-transform: uppercase; white-space: nowrap;
+}
+.brand-sub {
+  margin-left: 2px; padding-left: 12px; border-left: 1px solid var(--rule);
+  font-family: var(--mono); font-size: 9px; line-height: 1.2; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--ink-soft); white-space: nowrap;
+}
+.masthead-links {
+  display: flex; align-items: center; gap: 16px;
+  font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em;
+  text-transform: uppercase; white-space: nowrap;
+}
+.masthead-links a { text-decoration: none; }
+.masthead-links a:hover { text-decoration: underline; }
+.local-flag {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--ink); padding: 3px 7px;
+}
+.local-flag .dot { width: 6px; height: 6px; background: var(--signal); }
+.theme-switch { display: inline-flex; align-items: stretch; gap: 1px; padding: 1px; border: 1px solid var(--ink); }
+.theme-switch button {
+  appearance: none; border: 0; border-radius: 0; padding: 4px 7px;
+  background: transparent; color: var(--ink-soft); font-family: var(--mono);
+  font-size: 9px; line-height: 1.2; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer;
+}
+.theme-switch button:hover { color: var(--ink); }
+.theme-switch button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+
+.intro { margin-top: 44px; }
+.eyebrow {
+  display: flex; align-items: center; gap: 9px; margin: 0;
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--ink-soft);
+}
+.eyebrow::before { content: ""; width: 26px; height: 1px; background: var(--signal); flex: none; }
+h1 {
+  margin: 12px 0 18px; font-family: var(--display); font-weight: 700;
+  font-size: clamp(2.8rem, 6.2vw, 5rem); line-height: 0.92; letter-spacing: -0.01em;
+}
+.lead { max-width: 60ch; margin: 0; font-size: 17px; line-height: 1.55; color: var(--lead); }
+
+.cards {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 26px; margin-top: 40px;
+}
+.card {
+  display: flex; flex-direction: column;
+  padding: 22px 22px 18px; border: 1px solid var(--ink); background: transparent;
+}
+.card-head { display: flex; align-items: baseline; gap: 11px; }
+.card-glyph {
+  flex: none; padding: 3px 7px 4px; background: var(--ink); color: var(--paper);
+  font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.08em; line-height: 1;
+}
+.card h2 {
+  margin: 0; font-family: var(--display); font-weight: 600; font-size: 26px;
+  line-height: 1; letter-spacing: 0.01em;
+}
+.card-sub {
+  margin: 10px 0 0; font-family: var(--mono); font-size: 9px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-soft);
+}
+.card p.body { margin: 12px 0 0; font-size: 14px; line-height: 1.55; color: var(--lead); }
+.spec {
+  display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 18px 0 0; padding: 9px 0;
+  border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule);
+}
+.spec div { display: flex; flex-direction: column; gap: 1px; }
+.spec dt {
+  font-family: var(--mono); font-size: 8px; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--ink-soft);
+}
+.spec dd { margin: 0; font-family: var(--mono); font-size: 10px; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: auto; padding-top: 20px; }
+.btn {
+  appearance: none; display: inline-block; padding: 11px 18px; border: 1px solid var(--signal-dark);
+  border-radius: 0; background: var(--signal); color: var(--on-signal); text-decoration: none;
+  font-family: var(--display); font-weight: 600; font-size: 17px; line-height: 1;
+  letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer;
+}
+.btn:hover { background: #f05a1d; color: var(--on-signal); }
+.btn-quiet {
+  appearance: none; display: inline-block; padding: 11px 16px; border: 1px solid var(--ink);
+  border-radius: 0; background: transparent; color: var(--ink); text-decoration: none;
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer;
+}
+.btn-quiet:hover { background: var(--ink); color: var(--paper); }
+
+.footer {
+  display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between;
+  gap: 8px 24px; margin-top: 52px; padding-top: 13px; border-top: 1px solid var(--ink);
+  font-family: var(--mono); font-size: 9px; line-height: 1.6; color: var(--ink-soft);
+}
+.footer p { margin: 0; }
+.footer strong { color: var(--ink); font-weight: 600; }
+.footer-links { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.footer-links a { color: var(--ink); }
+
+@media (max-width: 760px) {
+  .sheet { padding: 0 17px 34px; }
+  .brand-sub { display: none; }
+  .cards { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  h1 { font-size: clamp(2.6rem, 13vw, 3.6rem); }
+  .lead { font-size: 15px; }
+}
+@media (max-width: 480px) {
+  .local-flag { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}
+</style>
 </head>
 <body>
-<a class="skip-link" href="#main">Skip to the compressor</a>
-
 <div class="sheet">
   <header class="masthead">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-      <span class="brand-name">SB3 Compressor</span>
-      <span class="brand-sub">browser file utility</span>
+      <span class="brand-name">SB3 Tools</span>
+      <span class="brand-sub">browser utilities</span>
     </div>
     <div class="masthead-links">
-      <a class="lang-link" href="ja/" hreflang="ja" lang="ja">日本語</a>
       <div class="theme-switch" role="group" aria-label="Color theme">
         <button type="button" data-theme-set="light">Light</button>
         <button type="button" data-theme-set="dark">Dark</button>
       </div>
       <span class="local-flag"><span class="dot" aria-hidden="true"></span>Local only</span>
-      <a class="source-link" href="https://github.com/PixelNest256/sb3-compressor" rel="noopener">Source&nbsp;↗</a>
     </div>
   </header>
 
-  <main id="main" class="layout">
-    <div class="main-col">
-      <section class="intro" aria-labelledby="page-title">
-        <p class="eyebrow">For Scratch and TurboWarp project files</p>
-        <h1 id="page-title">Smaller .sb3.<br>Same project.</h1>
-        <p class="lead">
-          Removes unused data, shortens IDs, and shares repeated code inside
-          an <code>.sb3</code> file. The result opens and runs with the same
-          behavior — no upload, no Python, no install.
+  <main>
+    <section class="intro">
+      <p class="eyebrow">Two browser tools for Scratch and TurboWarp files</p>
+      <h1>Compress the project.<br>Compress the media.</h1>
+      <p class="lead">
+        Two independent tools for <code>.sb3</code> files. One slims the
+        <code>project.json</code> logic without changing behavior; the other
+        re-encodes costumes and sounds. Both run entirely in your browser —
+        no upload, no install.
+      </p>
+    </section>
+
+    <div class="cards">
+      <section class="card" aria-labelledby="card-sb3">
+        <div class="card-head">
+          <span class="card-glyph" aria-hidden="true">.sb3</span>
+          <h2 id="card-sb3">SB3 Compressor</h2>
+        </div>
+        <p class="card-sub">Project data · behavior-preserving</p>
+        <p class="body">
+          Renames IDs, drops unused variables and unreachable code, and shares
+          repeated blocks, then minifies <code>project.json</code> and repacks
+          the zip. Costumes and sounds are copied through unchanged.
         </p>
         <dl class="spec">
           <div><dt>Reads</dt><dd>.sb3 / project.json</dd></div>
           <div><dt>Writes</dt><dd>*_compressed.sb3</dd></div>
           <div><dt>Upload</dt><dd>none</dd></div>
         </dl>
+        <div class="actions">
+          <a class="btn" href="sb3/">Open the tool</a>
+          <a class="btn-quiet" href="sb3/ja/">日本語</a>
+        </div>
       </section>
 
-      <section class="panel input-panel" aria-labelledby="input-title">
-        <div class="panel-head">
-          <h2 id="input-title">Input</h2>
-          <span class="head-rule" aria-hidden="true"></span>
-          <span class="panel-meta">.sb3 / .json</span>
+      <section class="card" aria-labelledby="card-media">
+        <div class="card-head">
+          <span class="card-glyph" aria-hidden="true">AV</span>
+          <h2 id="card-media">Media Compressor</h2>
         </div>
-
-        <div id="dropzone" class="dropzone" role="button" tabindex="0"
-             aria-describedby="drop-hint" aria-label="Choose an .sb3 or project.json file">
-          <span class="corner tl" aria-hidden="true"></span>
-          <span class="corner tr" aria-hidden="true"></span>
-          <span class="corner bl" aria-hidden="true"></span>
-          <span class="corner br" aria-hidden="true"></span>
-          <span class="drop-glyph" aria-hidden="true">.sb3</span>
-          <p class="drop-title">Drop a project here</p>
-          <p class="drop-hint" id="drop-hint">or <span class="linkish">choose a file</span> from your computer</p>
-        </div>
-        <input type="file" id="fileInput" class="visually-hidden" accept=".sb3,.json,application/json,application/zip">
-
-        <div id="fileRow" class="file-row" hidden>
-          <div class="file-meta">
-            <span class="file-name" id="fileName">project.sb3</span>
-            <span class="file-size" id="fileSize">—</span>
-          </div>
-          <button type="button" id="clearBtn" class="text-btn">Remove</button>
-        </div>
-
-        <p class="privacy">The file is read in this tab. Nothing is sent to a server.</p>
-      </section>
-
-      <section class="panel options-panel" aria-labelledby="options-title">
-        <div class="panel-head">
-          <h2 id="options-title">Options</h2>
-          <span class="head-rule" aria-hidden="true"></span>
-          <button type="button" id="resetOptions" class="text-btn">Reset to defaults</button>
-        </div>
-
-        <div class="opt-grid">
-          <fieldset class="opt-group">
-            <legend>Reclaim space</legend>
-            <label class="opt"><input type="checkbox" checked data-opt="stripDefaults"><span>Remove values Scratch restores</span></label>
-            <label class="opt"><input type="checkbox" checked data-opt="removeUnused"><span>Remove unused variables and lists</span></label>
-            <label class="opt"><input type="checkbox" checked data-opt="clearInitialValues"><span>Clear overwritten starting values</span></label>
-            <label class="opt"><input type="checkbox" checked data-opt="dropObscuredShadows"><span>Drop hidden input defaults</span></label>
-            <label class="opt"><input type="checkbox" checked data-opt="removeUnreachable"><span>Remove code that never runs</span></label>
-            <label class="opt"><input type="checkbox" data-opt="stripComments"><span>Remove all comments (their text is lost)</span></label>
-          </fieldset>
-
-          <fieldset class="opt-group">
-            <legend>Restructure</legend>
-            <label class="opt"><input type="checkbox" checked data-opt="extractDuplicates"><span>Extract repeated code</span></label>
-            <label class="opt"><input type="checkbox" checked data-opt="nearDuplicates"><span>Merge near-identical code</span></label>
-            <label class="opt"><input type="checkbox" checked data-opt="loopDuplicates"><span>Replace repeated runs with loops</span></label>
-            <label class="opt"><input type="checkbox" checked data-opt="inlineSingleCall"><span>Inline blocks used only once</span></label>
-            <label class="opt"><input type="checkbox" checked data-opt="removeNoops"><span>Remove do-nothing blocks</span></label>
-            <label class="opt"><input type="checkbox" checked data-opt="simplifyIfElse"><span>Turn empty if-else into if</span></label>
-            <label class="opt"><input type="checkbox" data-opt="compactWorkspace"><span>Re-flow the workspace layout</span></label>
-          </fieldset>
-
-          <fieldset class="opt-group">
-            <legend>Rename &amp; fold</legend>
-            <label class="opt"><input type="checkbox" checked data-opt="shortenIds"><span>Shorten internal IDs</span></label>
-            <label class="opt"><input type="checkbox" checked data-opt="freqIds"><span>Give frequent blocks shorter IDs</span></label>
-            <label class="opt"><input type="checkbox" checked data-opt="compressProcs"><span>Shorten custom block names</span></label>
-            <label class="opt"><input type="checkbox" checked data-opt="foldConstants"><span>Calculate constant math</span></label>
-            <label class="opt"><input type="checkbox" checked data-opt="propagateConstants"><span>Replace constant variables with values</span></label>
-          </fieldset>
-        </div>
-
-        <label class="opt opt-warn">
-          <input type="checkbox" data-opt="clickToStage">
-          <span>Rewrite sprite clicks as stage clicks</span>
-          <span class="tag">changes behavior</span>
-        </label>
-
-        <p class="options-note">
-          All options except the last one are designed to preserve behavior.
-          Near-duplicate sharing only passes literal inputs as arguments;
-          dropdown fields are never converted.
+        <p class="card-sub">Costumes &amp; sounds · lossy</p>
+        <p class="body">
+          Reduces PNG costumes to a palette, re-encodes JPEGs, trims SVG art,
+          resamples WAV sounds, and strips MP3 tags. <code>project.json</code>
+          stays byte-for-byte identical.
         </p>
-      </section>
-
-      <section class="notes" aria-labelledby="notes-title">
-        <div class="panel-head">
-          <h2 id="notes-title">Notes</h2>
-          <span class="head-rule" aria-hidden="true"></span>
+        <dl class="spec">
+          <div><dt>Reads</dt><dd>.sb3</dd></div>
+          <div><dt>Writes</dt><dd>*_media.sb3</dd></div>
+          <div><dt>Upload</dt><dd>none</dd></div>
+        </dl>
+        <div class="actions">
+          <a class="btn" href="media/">Open the tool</a>
+          <a class="btn-quiet" href="media/ja/">日本語</a>
         </div>
-        <details>
-          <summary>What gets changed, and what does not</summary>
-          <div class="notes-body">
-            <p>
-              The compressor works only on the project data inside the zip.
-              Costumes and sounds are copied through unchanged.
-            </p>
-            <ul>
-              <li>Block IDs, variable names, list names, and broadcast names become short generated IDs.</li>
-              <li>Unused stores, unreachable scripts, and default-valued fields are removed.</li>
-              <li>Repeated or near-repeated code becomes a new custom block when that makes the file smaller.</li>
-              <li>Original names cannot be recovered from the output. Keep a copy of the original file.</li>
-            </ul>
-            <p class="fine">
-              The output keeps the <code>parent: null</code> and end-of-stack
-              <code>next: null</code> markers that the Scratch VM interpreter
-              relies on.
-            </p>
-          </div>
-        </details>
-        <details>
-          <summary>Proof of behavior</summary>
-          <div class="notes-body">
-            <p>
-              The engine is the same compressor as the Python CLI in this
-              repository. Its test suite checks structure, determinism, fuzzed
-              projects, and differential playback against TurboWarp's
-              <code>scratch-vm</code> with the compiler both on and off.
-            </p>
-          </div>
-        </details>
       </section>
     </div>
-
-    <aside class="side-col" aria-label="Compression result">
-      <section class="readout" aria-labelledby="readout-title">
-        <div class="readout-head">
-          <h2 id="readout-title">Compression readout</h2>
-          <span class="stamp" aria-hidden="true">Local<br>only</span>
-        </div>
-
-        <div class="size-pair">
-          <div class="size-row">
-            <span class="label">project.json</span>
-            <span class="value" id="jsonSizes">—</span>
-          </div>
-          <div class="size-row">
-            <span class="label">.sb3 file</span>
-            <span class="value" id="fileSizes">—</span>
-          </div>
-        </div>
-
-        <div class="gauge" id="gauge" role="img" aria-label="No compression measured yet">
-          <div class="gauge-track">
-            <div class="gauge-kept" id="gaugeKept"><span id="gaugeKeptLabel">—</span></div>
-            <div class="gauge-removed" id="gaugeRemoved"></div>
-          </div>
-          <div class="gauge-scale" aria-hidden="true">
-            <span>0</span><span>25</span><span>50</span><span>75</span><span>100%</span>
-          </div>
-          <div class="gauge-legend">
-            <span><i class="key kept" aria-hidden="true"></i>Kept</span>
-            <span><i class="key removed" aria-hidden="true"></i>Removed</span>
-          </div>
-        </div>
-
-        <div class="figure">
-          <span class="figure-num" id="figureNum">0.0</span><span class="figure-unit">%</span>
-          <span class="figure-label" id="figureLabel">smaller project.json</span>
-        </div>
-
-        <div class="run-state">
-          <div class="run-line">
-            <span id="phaseLabel" aria-live="polite">Ready</span>
-            <span id="percentLabel">0%</span>
-          </div>
-          <div class="progress" id="progress" role="progressbar"
-               aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            <span id="progressBar"></span>
-          </div>
-          <p class="run-message" id="runMessage">Choose a project to begin.</p>
-        </div>
-
-        <div class="readout-actions">
-          <button type="button" id="downloadBtn" class="btn-primary" disabled>Download .sb3</button>
-          <div class="action-row">
-            <button type="button" id="runAgainBtn" class="btn-quiet" hidden>Run again</button>
-            <button type="button" id="cancelBtn" class="btn-quiet" hidden>Cancel</button>
-          </div>
-        </div>
-
-        <div id="stats" class="stats" hidden>
-          <div class="stats-key" id="statsKey"></div>
-          <details class="stats-all">
-            <summary>All counts</summary>
-            <dl id="statsAll"></dl>
-          </details>
-        </div>
-
-        <div class="readout-foot">
-          <span>Engine: SB3 Compressor</span>
-          <span>v1.0</span>
-        </div>
-      </section>
-    </aside>
   </main>
 
   <footer class="footer">
-    <p>
-      <strong>SB3 Compressor</strong> · browser edition. Everything runs in
-      this tab; files are never uploaded.
-    </p>
+    <p><strong>SB3 Tools</strong> · everything runs in your browser; files are never uploaded.</p>
     <p class="footer-links">
       <a href="https://github.com/PixelNest256/sb3-compressor" rel="noopener">GitHub repository ↗</a>
-      <span aria-hidden="true">/</span>
-      <a href="https://github.com/PixelNest256/sb3-compressor/blob/main/sb3_compressor.py" rel="noopener">Python CLI</a>
       <span aria-hidden="true">/</span>
       <span>MIT License</span>
     </p>
   </footer>
 </div>
 
-<script src="app.js"></script>
+<script>
+(function () {
+  var buttons = Array.prototype.slice.call(document.querySelectorAll("button[data-theme-set]"));
+  var KEY = "sb3-tools-theme-v1";
+  function current() {
+    return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  }
+  function apply(theme, persist) {
+    var dark = theme === "dark";
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", dark ? "#15180f" : "#e7e8e1");
+    buttons.forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-theme-set") === (dark ? "dark" : "light")));
+    });
+    if (persist) { try { localStorage.setItem(KEY, dark ? "dark" : "light"); } catch (e) {} }
+  }
+  buttons.forEach(function (b) {
+    b.addEventListener("click", function () { apply(b.getAttribute("data-theme-set"), true); });
+  });
+  apply(current(), false);
+})();
+</script>
 </body>
 </html>
